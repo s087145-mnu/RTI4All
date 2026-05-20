@@ -1,0 +1,264 @@
+{
+  "departments": [
+    {
+      "id": "dept-001",
+      "name": "Public Works",
+      "description": "Responsible for infrastructure, roads, bridges, public buildings, and civic amenities.",
+      "contact_email": "public.works@gov.example.in"
+    },
+    {
+      "id": "dept-002",
+      "name": "Health & Family Welfare",
+      "description": "Oversees public hospitals, clinics, health schemes, and disease control programmes.",
+      "contact_email": "health@gov.example.in"
+    },
+    {
+      "id": "dept-003",
+      "name": "Education",
+      "description": "Manages government schools, colleges, scholarships, and mid-day meal programmes.",
+      "contact_email": "education@gov.example.in"
+    },
+    {
+      "id": "dept-004",
+      "name": "Finance & Revenue",
+      "description": "Handles taxation, budget allocations, public expenditure, and revenue collection.",
+      "contact_email": "finance@gov.example.in"
+    },
+    {
+      "id": "dept-005",
+      "name": "Environment & Forests",
+      "description": "Regulates environmental clearances, forest conservation, pollution control, and wildlife protection.",
+      "contact_email": "environment@gov.example.in"
+    },
+    {
+      "id": "dept-006",
+      "name": "Transport",
+      "description": "Governs road transport, vehicle registration, driving licences, and public bus services.",
+      "contact_email": "transport@gov.example.in"
+    },
+    {
+      "id": "dept-007",
+      "name": "Housing & Urban Development",
+      "description": "Responsible for affordable housing schemes, urban planning, and municipal services.",
+      "contact_email": "housing@gov.example.in"
+    },
+    {
+      "id": "dept-008",
+      "name": "Police & Internal Security",
+      "description": "Manages law enforcement, crime prevention, and public order activities.",
+      "contact_email": "police@gov.example.in"
+    },
+    {
+      "id": "dept-009",
+      "name": "Agriculture & Farmers Welfare",
+      "description": "Supports farmers through subsidies, crop insurance, irrigation programmes, and advisory services.",
+      "contact_email": "agriculture@gov.example.in"
+    },
+    {
+      "id": "dept-010",
+      "name": "Water Supply & Sanitation",
+      "description": "Ensures supply of potable water, sewage treatment, and sanitation infrastructure in urban and rural areas.",
+      "contact_email": "water@gov.example.in"
+    }
+  ],
+  "requests": [
+    {
+      "id": "RTI-2024-0001",
+      "citizen_name": "Ananya Sharma",
+      "email": "ananya.sharma@example.com",
+      "department_id": "dept-003",
+      "department": "Education",
+      "subject": "Details of Mid-Day Meal Expenditure in District Schools",
+      "description": "I seek information on the total funds allocated and actual expenditure on the mid-day meal scheme across all government primary schools in the district for the financial year 2023-24, including per-school breakdowns and vendor contracts awarded.",
+      "status": "Responded",
+      "date_filed": "2024-01-15",
+      "date_updated": "2024-02-10",
+      "response": "The total budget allocated for the mid-day meal scheme in 2023-24 was Rs 4.2 crore. Expenditure as of Q3 stood at Rs 3.1 crore across 214 schools. Detailed per-school breakdowns and vendor agreements are enclosed as Annexure A and B respectively."
+    },
+    {
+      "id": "RTI-2024-0002",
+      "citizen_name": "Rajan Mehta",
+      "email": "rajan.mehta@example.com",
+      "department_id": "dept-001",
+      "department": "Public Works",
+      "subject": "Status of Road Repair Tenders on NH-48 Bypass",
+      "description": "Please provide details of all tenders floated for repair and maintenance of the NH-48 bypass stretch within city limits during 2023-24, including names of contractors awarded, bid amounts, and current work completion status.",
+      "status": "In Progress",
+      "date_filed": "2024-02-03",
+      "date_updated": "2024-02-20",
+      "response": null
+    },
+    {
+      "id": "RTI-2024-0003",
+      "citizen_name": "Priya Nair",
+      "email": "priya.nair@example.com",
+      "department_id": "dept-002",
+      "department": "Health & Family Welfare",
+      "subject": "Availability of Essential Medicines at District Hospital",
+      "description": "I would like to know the current stock levels of essential medicines as per the National List of Essential Medicines (NLEM) at the District General Hospital, including details of any shortages reported in the last six months and steps taken to address them.",
+      "status": "Pending",
+      "date_filed": "2024-03-01",
+      "date_updated": "2024-03-01",
+      "response": null
+    },
+    {
+      "id": "RTI-2024-0004",
+      "citizen_name": "Mohammed Iqbal",
+      "email": "m.iqbal@example.com",
+      "department_id": "dept-004",
+      "department": "Finance & Revenue",
+      "subject": "Property Tax Assessment Criteria for Residential Zones",
+      "description": "I request information on the methodology and criteria used for calculating property tax for residential properties in Zone C, along with the revision history of tax rates for the past five years and any pending policy changes.",
+      "status": "Responded",
+      "date_filed": "2024-01-22",
+      "date_updated": "2024-02-18",
+      "response": "Property tax in Zone C is computed based on Annual Rental Value (ARV) at a rate of 12% for self-occupied residential units. Rates were last revised in 2022 with a 5% increase. The revision history from 2019 onwards and the draft policy proposal for 2025 are attached."
+    },
+    {
+      "id": "RTI-2024-0005",
+      "citizen_name": "Sunita Devi",
+      "email": "sunita.devi@example.com",
+      "department_id": "dept-007",
+      "department": "Housing & Urban Development",
+      "subject": "Allotment List for Pradhan Mantri Awaas Yojana (Urban)",
+      "description": "Please provide the complete list of beneficiaries selected under the Pradhan Mantri Awaas Yojana (Urban) scheme in Ward 14 and Ward 15 for the 2023-24 cycle, including the selection criteria applied and number of applications rejected.",
+      "status": "Rejected",
+      "date_filed": "2024-02-14",
+      "date_updated": "2024-03-05",
+      "response": "Your request has been rejected under Section 8(1)(j) of the RTI Act, 2005, as the beneficiary list contains personal information of third parties which has no bearing on any public activity and disclosure of which would cause unwarranted invasion of their privacy. You may appeal to the First Appellate Authority within 30 days."
+    },
+    {
+      "id": "RTI-2024-0006",
+      "citizen_name": "Arjun Pillai",
+      "email": "arjun.pillai@example.com",
+      "department_id": "dept-005",
+      "department": "Environment & Forests",
+      "subject": "Environmental Clearance for Industrial Plant near Riverside",
+      "description": "Kindly provide copies of all environmental clearance documents, impact assessment reports, and NOCs issued to M/s RiverTech Industries Pvt Ltd for their proposed chemical plant within 2 km of the Kaveri riverbank, along with minutes of public hearings if conducted.",
+      "status": "In Progress",
+      "date_filed": "2024-02-25",
+      "date_updated": "2024-03-12",
+      "response": null
+    },
+    {
+      "id": "RTI-2024-0007",
+      "citizen_name": "Kavitha Reddy",
+      "email": "kavitha.reddy@example.com",
+      "department_id": "dept-006",
+      "department": "Transport",
+      "subject": "Number of Fitness Certificate Failures at RTO in 2023",
+      "description": "I seek the total number of vehicles that failed their mandatory fitness certificate inspection at the Regional Transport Office (RTO) code KA-05 during January 2023 to December 2023, broken down by vehicle category (commercial, private, two-wheeler).",
+      "status": "Responded",
+      "date_filed": "2024-01-08",
+      "date_updated": "2024-01-29",
+      "response": "In 2023, a total of 3,847 vehicles failed fitness inspections at RTO KA-05: 1,204 commercial vehicles, 1,893 private four-wheelers, and 750 two-wheelers. The primary reasons for rejection were emission non-compliance (42%) and brake system defects (31%)."
+    },
+    {
+      "id": "RTI-2024-0008",
+      "citizen_name": "Deepak Soni",
+      "email": "deepak.soni@example.com",
+      "department_id": "dept-008",
+      "department": "Police & Internal Security",
+      "subject": "FIR Registration Statistics for Cyber Crime in 2023",
+      "description": "Please provide the total number of FIRs registered under cyber crime categories (including online fraud, identity theft, cyberbullying) at all police stations in the city commissionerate during 2023, along with the number of cases charge-sheeted and conviction rates.",
+      "status": "Pending",
+      "date_filed": "2024-03-05",
+      "date_updated": "2024-03-05",
+      "response": null
+    },
+    {
+      "id": "RTI-2024-0009",
+      "citizen_name": "Fatima Begum",
+      "email": "fatima.begum@example.com",
+      "department_id": "dept-009",
+      "department": "Agriculture & Farmers Welfare",
+      "subject": "Details of PM-KISAN Beneficiary Payments in Taluk",
+      "description": "I request details of the total number of farmers enrolled under the PM-KISAN scheme in Hosapete Taluk, total amounts disbursed in instalments during 2022-23 and 2023-24, and the number of pending/failed transactions along with reasons.",
+      "status": "In Progress",
+      "date_filed": "2024-02-18",
+      "date_updated": "2024-03-08",
+      "response": null
+    },
+    {
+      "id": "RTI-2024-0010",
+      "citizen_name": "Suresh Patil",
+      "email": "suresh.patil@example.com",
+      "department_id": "dept-010",
+      "department": "Water Supply & Sanitation",
+      "subject": "Water Quality Test Reports for Municipal Supply 2023",
+      "description": "Kindly provide all water quality test reports (bacteriological and chemical parameters) for the municipal drinking water supply conducted at source, treatment plant, and distribution points during April 2023 to March 2024, along with any non-compliance notices issued.",
+      "status": "Responded",
+      "date_filed": "2024-01-30",
+      "date_updated": "2024-02-28",
+      "response": "48 water quality tests were conducted in 2023-24. Of these, 44 met BIS standards IS 10500:2012. Four samples from distribution points in Ward 7 and Ward 11 showed elevated turbidity levels exceeding permissible limits. Corrective measures including pipe flushing and chlorination were undertaken. All non-compliance notices and test certificates are attached."
+    },
+    {
+      "id": "RTI-2024-0011",
+      "citizen_name": "Neha Gupta",
+      "email": "neha.gupta@example.com",
+      "department_id": "dept-003",
+      "department": "Education",
+      "subject": "Recruitment Status for Vacant Teacher Posts in Government Schools",
+      "description": "Please provide the number of sanctioned and currently vacant teacher posts in government secondary schools in the district, the last date on which recruitment was conducted, and the current status of any ongoing recruitment drives.",
+      "status": "Pending",
+      "date_filed": "2024-03-10",
+      "date_updated": "2024-03-10",
+      "response": null
+    },
+    {
+      "id": "RTI-2024-0012",
+      "citizen_name": "Ramesh Kumar",
+      "email": "ramesh.kumar@example.com",
+      "department_id": "dept-001",
+      "department": "Public Works",
+      "subject": "Inspection Reports for Newly Constructed Municipal Bridge",
+      "description": "I seek copies of all structural inspection and quality audit reports for the newly constructed pedestrian bridge over the drainage canal at Sector 9, including third-party audit results, load-bearing test data, and the name of the executing agency.",
+      "status": "Rejected",
+      "date_filed": "2024-02-07",
+      "date_updated": "2024-02-28",
+      "response": "Your request is rejected as the structural audit reports contain proprietary technical data shared by the third-party inspection agency under a confidentiality clause. However, the summary compliance certificate confirming the bridge meets IRC safety standards is provided herewith. You may appeal within 30 days."
+    }
+  ],
+  "faqs": [
+    {
+      "id": "faq-001",
+      "question": "What is the Right to Information (RTI) Act?",
+      "answer": "The Right to Information Act, 2005 is a landmark Indian law that empowers citizens to request information from any public authority. Public authorities are obligated to respond within 30 days (or 48 hours for matters involving life and liberty). It promotes transparency and accountability in governance."
+    },
+    {
+      "id": "faq-002",
+      "question": "Who can file an RTI application?",
+      "answer": "Any citizen of India can file an RTI application. There is no requirement to state reasons for seeking the information. NRIs and foreign nationals are not eligible under the RTI Act, 2005."
+    },
+    {
+      "id": "faq-003",
+      "question": "What is the fee for filing an RTI application?",
+      "answer": "The application fee is Rs 10 for Central Government departments, payable via demand draft, postal order, cash, or online payment. State governments may have different fee structures. Persons Below the Poverty Line (BPL) are exempt from paying any fee."
+    },
+    {
+      "id": "faq-004",
+      "question": "What types of information can be exempted from disclosure?",
+      "answer": "Section 8 of the RTI Act lists exemptions including information that affects national security, information received in confidence from foreign governments, cabinet papers, personal information with no public interest justification, and information that would impede ongoing investigations. These exemptions are not absolute and public interest can override them in many cases."
+    },
+    {
+      "id": "faq-005",
+      "question": "What can I do if my RTI application is rejected or I don't receive a response?",
+      "answer": "If you receive no response within 30 days, or are unsatisfied with the response or rejection, you can file a First Appeal to the First Appellate Authority (FAA) within 30 days. If still unsatisfied, you can file a Second Appeal or Complaint with the Central or State Information Commission within 90 days."
+    },
+    {
+      "id": "faq-006",
+      "question": "How long does it take to get a response to an RTI request?",
+      "answer": "Public authorities must respond within 30 days of receiving the application. If the information concerns the life or liberty of a person, the response must be provided within 48 hours. If the request is transferred to another department, an additional 30 days is allowed."
+    },
+    {
+      "id": "faq-007",
+      "question": "Can I track the status of my RTI application online?",
+      "answer": "Yes. For Central Government ministries and departments, you can track your application on the RTI Online Portal (rtionline.gov.in) using your registration number. Many state governments also have their own online portals. This platform allows you to track your submitted applications in real time."
+    },
+    {
+      "id": "faq-008",
+      "question": "What details should an RTI application include?",
+      "answer": "Your RTI application should clearly state: your full name and contact address, the specific information you are seeking (be as precise as possible), the time period the information pertains to, the preferred format (soft copy / hard copy), and the application fee. Avoid vague or overly broad requests to ensure a timely and complete response."
+    }
+  ]
+}

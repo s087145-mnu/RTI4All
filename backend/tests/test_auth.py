@@ -26,20 +26,6 @@ VALID_RTI_PAYLOAD = {
 }
 
 
-@pytest.fixture
-def client(monkeypatch):
-    """Fresh TestClient with users reset, cache cleared, AI step stubbed."""
-    import main
-    from auth import reset_users
-
-    reset_users()
-    main._query_cache._store.clear()
-    monkeypatch.setattr(main, "answer_request", lambda **kwargs: "stub AI answer")
-
-    with TestClient(main.app) as test_client:
-        yield test_client
-
-
 def _signup(client: TestClient, **overrides) -> dict:
     payload = {**SIGNUP_PAYLOAD, **overrides}
     return client.post("/api/auth/signup", json=payload).json()
@@ -169,8 +155,9 @@ def test_post_request_with_valid_token_succeeds(client):
     )
     assert response.status_code == 201
     created = response.json()
-    assert created["status"] == "Responded"
-    assert created["response"] == "stub AI answer"
+    # New AI-drafted requests await admin approval before reaching "Responded".
+    assert created["status"] == "Under Review"
+    assert created["response"] == "stub AI draft"
 
 
 def test_post_request_uses_authenticated_user_identity(client):
@@ -210,6 +197,7 @@ def test_me_endpoint_returns_authenticated_user(client):
         "present_address": "M. Test House, Male'",
         "phone_number": "+960 7771234",
         "id_card": "A123456",
+        "is_admin": False,
     }
 
 

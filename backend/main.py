@@ -24,6 +24,7 @@ from auth import (
     authenticate_user,
     create_access_token,
     create_user,
+    get_current_admin,
     get_current_user,
 )
 from cache import QueryCache
@@ -83,6 +84,36 @@ class Department(BaseModel):
 
 
 class RTIRequest(BaseModel):
+    """Full record, returned only by admin endpoints."""
+
+    id: str
+    citizen_name: str
+    email: str
+    # Snapshotted from the citizen's profile at filing time so the ministry has
+    # full contact context without a second lookup, and so later profile edits
+    # don't retroactively alter the record.
+    citizen_phone: Optional[str] = None
+    citizen_address: Optional[str] = None
+    citizen_id_card: Optional[str] = None
+    department_id: str
+    department: str
+    subject: str
+    description: str
+    status: str
+    date_filed: str
+    date_updated: str
+    response: Optional[str] = None
+    # Set when an admin approves / rejects / edits the response.
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    rejection_reason: Optional[str] = None
+
+
+class PublicRTIRequest(BaseModel):
+    """Subset returned on public (citizen-facing) GETs. Excludes sensitive
+    profile snapshot fields (phone, address, ID card) and the internal review
+    audit (reviewed_by, reviewed_at)."""
+
     id: str
     citizen_name: str
     email: str
@@ -94,6 +125,7 @@ class RTIRequest(BaseModel):
     date_filed: str
     date_updated: str
     response: Optional[str] = None
+    rejection_reason: Optional[str] = None
 
 
 class CreateRTIRequest(BaseModel):
@@ -109,6 +141,18 @@ class CreateRTIRequest(BaseModel):
     description: str
 
 
+class AdminUpdateRTIRequest(BaseModel):
+    """Payload accepted by PATCH /api/admin/requests/{id}.
+
+    All fields optional — the admin sends only what they want to change.
+    Setting status to "Rejected" should be paired with a rejection_reason.
+    """
+
+    response: Optional[str] = None
+    status: Optional[str] = None
+    rejection_reason: Optional[str] = None
+
+
 class FAQ(BaseModel):
     id: str
     question: str
@@ -119,6 +163,7 @@ class StatsResponse(BaseModel):
     total_requests: int
     pending: int
     in_progress: int
+    under_review: int
     responded: int
     rejected: int
     total_departments: int
@@ -205,7 +250,7 @@ def me(current_user: UserPublic = Depends(get_current_user)):
 # ── Requests ────────────────────────────────────────────────────────────────
 
 
-@app.get("/api/requests", response_model=list[RTIRequest], tags=["RTI Requests"])
+@app.get("/api/requests", response_model=list[PublicRTIRequest], tags=["RTI Requests"])
 def list_requests(
     status: Optional[str] = Query(
         default=None,
@@ -232,7 +277,7 @@ def list_requests(
     return results
 
 
-@app.get("/api/requests/{request_id}", response_model=RTIRequest, tags=["RTI Requests"])
+@app.get("/api/requests/{request_id}", response_model=PublicRTIRequest, tags=["RTI Requests"])
 def get_request(request_id: str):
     """Return a single RTI request by its id."""
     for req in _db["requests"]:
@@ -271,6 +316,9 @@ def create_request(
         "id": _next_request_id(),
         "citizen_name": current_user.full_name,
         "email": current_user.email,
+        "citizen_phone": current_user.phone_number,
+        "citizen_address": current_user.present_address,
+        "citizen_id_card": current_user.id_card,
         "department_id": payload.department_id,
         "department": department_name,
         "subject": payload.subject,
@@ -279,6 +327,9 @@ def create_request(
         "date_filed": today,
         "date_updated": today,
         "response": answer,
+        "reviewed_by": None,
+        "reviewed_at": None,
+        "rejection_reason": None,
     }
 
     _db["requests"].append(new_request)
@@ -292,18 +343,23 @@ def _generate_answer(
     description: str,
 ) -> tuple[Optional[str], str]:
     """
-    Return (response_text, status) for a new RTI request.
+    Return (draft_response_text, status) for a new RTI request.
 
     Checks the in-memory cache first (exact normalized match — same query
-    text reuses the prior answer). On a miss, calls the AI step which looks
+    text reuses the prior draft). On a miss, calls the AI step which looks
     up information live from rtidhonbe.com (preferred) and falls back to
-    environment.gov.mv. If the AI call fails, the request is filed as
-    Pending so the citizen can still track it.
+    environment.gov.mv.
+
+    The successful status is "Under Review" — the AI's output is a draft that
+    a ministry officer must approve via the admin panel before becoming the
+    official response. If the AI call fails, the request is filed as Pending
+    so the citizen can still track it; the officer can author a response by
+    hand from the admin panel.
     """
     cache_key = QueryCache.make_key(department_id, subject, description)
     cached = _query_cache.get(cache_key)
     if cached is not None:
-        return cached, "Responded"
+        return cached, "Under Review"
 
     try:
         answer = answer_request(subject=subject, description=description)
@@ -312,7 +368,7 @@ def _generate_answer(
         return None, "Pending"
 
     _query_cache.put(cache_key, answer)
-    return answer, "Responded"
+    return answer, "Under Review"
 
 
 # ── Departments ──────────────────────────────────────────────────────────────
@@ -360,6 +416,7 @@ def get_stats():
     status_counts: dict[str, int] = {
         "Pending": 0,
         "In Progress": 0,
+        "Under Review": 0,
         "Responded": 0,
         "Rejected": 0,
     }
@@ -372,7 +429,103 @@ def get_stats():
         total_requests=len(requests),
         pending=status_counts["Pending"],
         in_progress=status_counts["In Progress"],
+        under_review=status_counts["Under Review"],
         responded=status_counts["Responded"],
         rejected=status_counts["Rejected"],
         total_departments=len(_db["departments"]),
     )
+
+
+# ── Admin ────────────────────────────────────────────────────────────────────
+
+_ADMIN_EDITABLE_STATUSES = {"Under Review", "Responded", "Rejected", "Pending"}
+
+
+@app.get(
+    "/api/admin/requests/pending",
+    response_model=list[RTIRequest],
+    tags=["Admin"],
+)
+def admin_list_pending(_: UserPublic = Depends(get_current_admin)):
+    """Admin inbox: requests awaiting human review, oldest first."""
+    pending = [
+        r for r in _db["requests"] if r.get("status") == "Under Review"
+    ]
+    pending.sort(key=lambda r: (r.get("date_filed", ""), r.get("id", "")))
+    return pending
+
+
+@app.get(
+    "/api/admin/requests/{request_id}",
+    response_model=RTIRequest,
+    tags=["Admin"],
+)
+def admin_get_request(
+    request_id: str,
+    _: UserPublic = Depends(get_current_admin),
+):
+    """Admin-only full record (includes citizen profile snapshot + audit fields)."""
+    for req in _db["requests"]:
+        if req["id"] == request_id:
+            return req
+    raise HTTPException(
+        status_code=404,
+        detail=f"RTI request '{request_id}' not found.",
+    )
+
+
+@app.patch(
+    "/api/admin/requests/{request_id}",
+    response_model=RTIRequest,
+    tags=["Admin"],
+)
+def admin_update_request(
+    request_id: str,
+    payload: AdminUpdateRTIRequest,
+    admin: UserPublic = Depends(get_current_admin),
+):
+    """
+    Update a request's draft response, status, or both. Stamps reviewed_by /
+    reviewed_at on any change. Used by the admin panel to approve, edit, or
+    reject AI-drafted responses.
+    """
+    target = None
+    for req in _db["requests"]:
+        if req["id"] == request_id:
+            target = req
+            break
+    if target is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"RTI request '{request_id}' not found.",
+        )
+
+    if payload.response is None and payload.status is None and payload.rejection_reason is None:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one of response, status, or rejection_reason must be provided.",
+        )
+
+    if payload.status is not None:
+        if payload.status not in _ADMIN_EDITABLE_STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Invalid status '{payload.status}'. Allowed: "
+                    + ", ".join(sorted(_ADMIN_EDITABLE_STATUSES))
+                ),
+            )
+        target["status"] = payload.status
+
+    if payload.response is not None:
+        target["response"] = payload.response
+
+    if payload.rejection_reason is not None:
+        target["rejection_reason"] = payload.rejection_reason or None
+
+    today = date.today().isoformat()
+    target["date_updated"] = today
+    target["reviewed_by"] = admin.email
+    target["reviewed_at"] = today
+
+    return target

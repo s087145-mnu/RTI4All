@@ -32,6 +32,7 @@ const INFO = "#0891b2";
 const STATUS_COLORS = {
   pending: { bg: "#fef3c7", color: "#92400e" },
   "in progress": { bg: "#dbeafe", color: "#1e40af" },
+  "under review": { bg: "#f5e9ff", color: "#6b21a8" },
   responded: { bg: "#d1fae5", color: "#065f46" },
   rejected: { bg: "#fee2e2", color: "#991b1b" },
 };
@@ -147,6 +148,18 @@ function RequireAuth({ children }) {
   const location = useLocation();
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
+  return children;
+}
+
+function RequireAdmin({ children }) {
+  const { user } = useAuth();
+  const location = useLocation();
+  if (!user) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
+  if (!user.is_admin) {
+    return <Navigate to="/" replace />;
   }
   return children;
 }
@@ -335,12 +348,18 @@ function Navbar() {
             { to: "/requests/new", label: "File RTI" },
             { to: "/departments", label: "Departments" },
             { to: "/faqs", label: "FAQs" },
+            ...(user?.is_admin ? [{ to: "/admin", label: "Admin" }] : []),
           ].map(({ to, label }) => (
             <NavLink
               key={to}
               to={to}
               end={to === "/"}
-              style={({ isActive }) => linkStyle(isActive)}
+              style={({ isActive }) => ({
+                ...linkStyle(isActive),
+                ...(label === "Admin"
+                  ? { color: isActive ? "#6b21a8" : "#7c3aed" }
+                  : {}),
+              })}
             >
               {label}
             </NavLink>
@@ -935,52 +954,92 @@ function RequestDetailPage() {
             </p>
           </Card>
 
-          {req.response && (
-            <Card style={{ borderLeft: `4px solid ${SUCCESS}` }}>
-              <SectionHeading style={{ color: SUCCESS }}>
-                Official Response
-              </SectionHeading>
-              {req.response_date && (
-                <p
-                  style={{
-                    color: MUTED,
-                    fontSize: "0.85rem",
-                    marginTop: -8,
-                    marginBottom: 12,
-                  }}
-                >
-                  Responded on{" "}
-                  {new Date(req.response_date).toLocaleDateString("en-IN", {
-                    dateStyle: "long",
-                  })}
-                </p>
-              )}
-              <p
+          {(() => {
+            const s = (req.status ?? "").toLowerCase();
+            if (s === "rejected") {
+              return (
+                <Card style={{ borderLeft: `4px solid ${DANGER}` }}>
+                  <SectionHeading style={{ color: DANGER }}>
+                    Request Rejected
+                  </SectionHeading>
+                  <p
+                    style={{
+                      color: TEXT,
+                      lineHeight: 1.75,
+                      margin: 0,
+                      whiteSpace: "pre-wrap",
+                    }}
+                  >
+                    {req.rejection_reason ||
+                      "This request was rejected. No reason was recorded."}
+                  </p>
+                </Card>
+              );
+            }
+            if (s === "under review" && req.response) {
+              return (
+                <Card style={{ borderLeft: `4px solid #7c3aed` }}>
+                  <SectionHeading style={{ color: "#6b21a8" }}>
+                    Draft Response · Pending Officer Review
+                  </SectionHeading>
+                  <p
+                    style={{
+                      color: MUTED,
+                      fontSize: "0.85rem",
+                      marginTop: -8,
+                      marginBottom: 12,
+                    }}
+                  >
+                    An AI-generated draft has been prepared and is awaiting
+                    review by a ministry officer before it becomes the official
+                    response.
+                  </p>
+                  <p
+                    style={{
+                      color: TEXT,
+                      lineHeight: 1.75,
+                      margin: 0,
+                      whiteSpace: "pre-wrap",
+                    }}
+                  >
+                    {req.response}
+                  </p>
+                </Card>
+              );
+            }
+            if (s === "responded" && req.response) {
+              return (
+                <Card style={{ borderLeft: `4px solid ${SUCCESS}` }}>
+                  <SectionHeading style={{ color: SUCCESS }}>
+                    Official Response
+                  </SectionHeading>
+                  <p
+                    style={{
+                      color: TEXT,
+                      lineHeight: 1.75,
+                      margin: 0,
+                      whiteSpace: "pre-wrap",
+                    }}
+                  >
+                    {req.response}
+                  </p>
+                </Card>
+              );
+            }
+            return (
+              <Card
                 style={{
-                  color: TEXT,
-                  lineHeight: 1.75,
-                  margin: 0,
-                  whiteSpace: "pre-wrap",
+                  borderLeft: `4px solid ${WARNING}`,
+                  background: "#fffbeb",
                 }}
               >
-                {req.response}
-              </p>
-            </Card>
-          )}
-
-          {!req.response && (
-            <Card
-              style={{
-                borderLeft: `4px solid ${WARNING}`,
-                background: "#fffbeb",
-              }}
-            >
-              <p style={{ margin: 0, color: "#92400e", fontWeight: 500 }}>
-                ⏳ No response yet. Public authorities have 30 days to respond
-                to RTI requests.
-              </p>
-            </Card>
-          )}
+                <p style={{ margin: 0, color: "#92400e", fontWeight: 500 }}>
+                  No response yet. Public authorities have 30 days to respond
+                  to RTI requests.
+                </p>
+              </Card>
+            );
+          })()}
         </>
       )}
     </PageWrapper>
@@ -1525,6 +1584,384 @@ function SignupPage() {
   );
 }
 
+// ─── Admin pages ─────────────────────────────────────────────────────────────
+function useAuthedFetch(path) {
+  const { token, logout } = useAuth();
+  const navigate = useNavigate();
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!path || !token) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetch(path, { headers: { Authorization: `Bearer ${token}` } })
+      .then(async (r) => {
+        if (r.status === 401) {
+          logout();
+          navigate("/login", { replace: true });
+          return;
+        }
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(extractErrorMessage(body, `HTTP ${r.status}`));
+        if (!cancelled) setData(body);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path, token, logout, navigate]);
+
+  return { data, loading, error };
+}
+
+function AdminInboxPage() {
+  const { data, loading, error } = useAuthedFetch("/api/admin/requests/pending");
+
+  return (
+    <PageWrapper>
+      <PageTitle>Admin · Review Inbox</PageTitle>
+      <Subtitle>
+        Requests awaiting human review, oldest first. AI drafts are listed
+        here pending approval, edit, or rejection.
+      </Subtitle>
+
+      {loading && <Spinner />}
+      {error && <ErrorBanner message={`Failed to load inbox: ${error}`} />}
+
+      {data && (
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          {data.length === 0 ? (
+            <div style={{ padding: 40, textAlign: "center", color: MUTED }}>
+              Inbox empty — all requests have been reviewed.
+            </div>
+          ) : (
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                fontSize: "0.9rem",
+              }}
+            >
+              <thead>
+                <tr
+                  style={{
+                    background: BG,
+                    borderBottom: `2px solid ${BORDER}`,
+                  }}
+                >
+                  {["ID", "Citizen", "Subject", "Date Filed", ""].map((h) => (
+                    <th
+                      key={h}
+                      style={{
+                        padding: "12px 16px",
+                        textAlign: "left",
+                        color: MUTED,
+                        fontWeight: 600,
+                        fontSize: "0.8rem",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.05em",
+                      }}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {data.map((req, idx) => (
+                  <tr
+                    key={req.id}
+                    style={{
+                      borderBottom: `1px solid ${BORDER}`,
+                      background: idx % 2 === 0 ? CARD_BG : "#fafbfd",
+                    }}
+                  >
+                    <td style={tdStyle}>
+                      <span style={{ color: TEXT, fontWeight: 600 }}>
+                        #{req.id}
+                      </span>
+                    </td>
+                    <td style={tdStyle}>
+                      <div>{req.citizen_name}</div>
+                      <div style={{ color: MUTED, fontSize: "0.78rem" }}>
+                        {req.email}
+                      </div>
+                    </td>
+                    <td
+                      style={{
+                        ...tdStyle,
+                        maxWidth: 280,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {req.subject}
+                    </td>
+                    <td style={{ ...tdStyle, color: MUTED, whiteSpace: "nowrap" }}>
+                      {req.date_filed
+                        ? new Date(req.date_filed).toLocaleDateString("en-IN", {
+                            day: "2-digit",
+                            month: "short",
+                            year: "numeric",
+                          })
+                        : "—"}
+                    </td>
+                    <td style={tdStyle}>
+                      <Link
+                        to={`/admin/requests/${req.id}`}
+                        style={btnStyle(PRIMARY, {
+                          padding: "6px 14px",
+                          fontSize: "0.8rem",
+                        })}
+                      >
+                        Review →
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      )}
+    </PageWrapper>
+  );
+}
+
+function AdminRequestReviewPage() {
+  const { id } = useParams();
+  const { token } = useAuth();
+  const navigate = useNavigate();
+  const { data: req, loading, error } = useAuthedFetch(`/api/admin/requests/${id}`);
+
+  const [draft, setDraft] = useState("");
+  const [rejectionReason, setRejectionReason] = useState("");
+  const [savingAction, setSavingAction] = useState(null); // "approve" | "reject" | "save"
+  const [actionError, setActionError] = useState(null);
+
+  useEffect(() => {
+    if (req) {
+      setDraft(req.response ?? "");
+      setRejectionReason(req.rejection_reason ?? "");
+    }
+  }, [req]);
+
+  const patchRequest = async (body) => {
+    const res = await fetch(`/api/admin/requests/${id}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(extractErrorMessage(data, `HTTP ${res.status}`));
+    return data;
+  };
+
+  const handle = async (action) => {
+    setSavingAction(action);
+    setActionError(null);
+    try {
+      if (action === "approve") {
+        await patchRequest({ response: draft, status: "Responded" });
+      } else if (action === "reject") {
+        if (!rejectionReason.trim()) {
+          throw new Error("Please provide a rejection reason.");
+        }
+        await patchRequest({
+          status: "Rejected",
+          rejection_reason: rejectionReason.trim(),
+        });
+      } else if (action === "save") {
+        await patchRequest({ response: draft });
+      }
+      navigate("/admin");
+    } catch (err) {
+      setActionError(err.message);
+      setSavingAction(null);
+    }
+  };
+
+  return (
+    <PageWrapper>
+      <Link
+        to="/admin"
+        style={{
+          color: MUTED,
+          textDecoration: "none",
+          fontSize: "0.875rem",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          marginBottom: 20,
+        }}
+      >
+        ← Back to Inbox
+      </Link>
+
+      {loading && <Spinner />}
+      {error && <ErrorBanner message={`Could not load request: ${error}`} />}
+
+      {req && (
+        <>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              gap: 16,
+              flexWrap: "wrap",
+              marginBottom: 28,
+            }}
+          >
+            <div>
+              <PageTitle>Review #{req.id}</PageTitle>
+              <p style={{ color: MUTED, margin: 0 }}>{req.subject}</p>
+            </div>
+            <span
+              style={{
+                ...statusChip(req.status),
+                fontSize: "0.875rem",
+                padding: "6px 16px",
+                alignSelf: "flex-start",
+                marginTop: 8,
+              }}
+            >
+              {req.status}
+            </span>
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+              gap: 20,
+              marginBottom: 20,
+            }}
+          >
+            <Card>
+              <SectionHeading>Citizen</SectionHeading>
+              <DetailRow label="Name" value={req.citizen_name} />
+              <DetailRow label="Email" value={req.email} />
+              <DetailRow label="Phone" value={req.citizen_phone} />
+              <DetailRow label="Address" value={req.citizen_address} />
+              <DetailRow label="ID Card" value={req.citizen_id_card} />
+            </Card>
+            <Card>
+              <SectionHeading>Filing</SectionHeading>
+              <DetailRow label="Department" value={req.department} />
+              <DetailRow label="Date Filed" value={req.date_filed} />
+              <DetailRow label="Last Updated" value={req.date_updated} />
+              <DetailRow label="Reviewed By" value={req.reviewed_by} />
+              <DetailRow label="Reviewed At" value={req.reviewed_at} />
+            </Card>
+          </div>
+
+          <Card style={{ marginBottom: 20 }}>
+            <SectionHeading>Citizen's Request</SectionHeading>
+            <p
+              style={{
+                color: TEXT,
+                lineHeight: 1.75,
+                margin: 0,
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {req.description}
+            </p>
+          </Card>
+
+          <Card style={{ marginBottom: 20 }}>
+            <SectionHeading>AI Draft Response (editable)</SectionHeading>
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              rows={10}
+              style={{
+                ...inputStyle(),
+                resize: "vertical",
+                lineHeight: 1.7,
+                fontFamily: "inherit",
+              }}
+            />
+          </Card>
+
+          <Card style={{ marginBottom: 20 }}>
+            <SectionHeading>Rejection Reason (only when rejecting)</SectionHeading>
+            <textarea
+              value={rejectionReason}
+              onChange={(e) => setRejectionReason(e.target.value)}
+              rows={3}
+              placeholder="e.g. Exempt under section 8(1)(j) of the RTI Act."
+              style={{ ...inputStyle(), resize: "vertical", lineHeight: 1.6 }}
+            />
+          </Card>
+
+          {actionError && <ErrorBanner message={actionError} />}
+
+          <div
+            style={{
+              display: "flex",
+              gap: 12,
+              justifyContent: "flex-end",
+              flexWrap: "wrap",
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => handle("save")}
+              disabled={savingAction !== null}
+              style={{
+                ...btnStyle(MUTED, {
+                  background: "transparent",
+                  border: `1px solid ${BORDER}`,
+                  color: TEXT,
+                }),
+                opacity: savingAction ? 0.6 : 1,
+              }}
+            >
+              {savingAction === "save" ? "Saving…" : "Save Draft"}
+            </button>
+            <button
+              type="button"
+              onClick={() => handle("reject")}
+              disabled={savingAction !== null}
+              style={{
+                ...btnStyle(DANGER),
+                opacity: savingAction ? 0.6 : 1,
+              }}
+            >
+              {savingAction === "reject" ? "Rejecting…" : "Reject"}
+            </button>
+            <button
+              type="button"
+              onClick={() => handle("approve")}
+              disabled={savingAction !== null}
+              style={{
+                ...btnStyle(SUCCESS),
+                opacity: savingAction ? 0.6 : 1,
+              }}
+            >
+              {savingAction === "approve" ? "Approving…" : "Approve & Publish"}
+            </button>
+          </div>
+        </>
+      )}
+    </PageWrapper>
+  );
+}
+
 // ─── DepartmentsPage ──────────────────────────────────────────────────────────
 function DepartmentsPage() {
   const { data: departments, loading, error } = useFetch("/api/departments");
@@ -1878,6 +2315,22 @@ export default function App() {
           <Route path="/requests/:id" element={<RequestDetailPage />} />
           <Route path="/departments" element={<DepartmentsPage />} />
           <Route path="/faqs" element={<FaqsPage />} />
+          <Route
+            path="/admin"
+            element={
+              <RequireAdmin>
+                <AdminInboxPage />
+              </RequireAdmin>
+            }
+          />
+          <Route
+            path="/admin/requests/:id"
+            element={
+              <RequireAdmin>
+                <AdminRequestReviewPage />
+              </RequireAdmin>
+            }
+          />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
 

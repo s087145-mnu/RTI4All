@@ -43,9 +43,20 @@ def _load_secret() -> str:
     return secret
 
 
+def _load_admin_emails() -> set[str]:
+    """Comma-separated whitelist of emails that get is_admin=True at signup/login."""
+    raw = os.environ.get("ADMIN_EMAILS", "")
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
 _SECRET_KEY = _load_secret()
+_ADMIN_EMAILS = _load_admin_emails()
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _is_admin_email(email: str) -> bool:
+    return email.strip().lower() in _ADMIN_EMAILS
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -72,6 +83,7 @@ class UserPublic(BaseModel):
     present_address: str
     phone_number: str
     id_card: Optional[str] = None
+    is_admin: bool = False
 
 
 class AuthResponse(BaseModel):
@@ -91,6 +103,7 @@ class _UserRecord(BaseModel):
     present_address: str
     phone_number: str
     id_card: Optional[str] = None
+    is_admin: bool = False
     password_hash: str
 
 
@@ -113,6 +126,7 @@ def _to_public(record: _UserRecord) -> UserPublic:
         present_address=record.present_address,
         phone_number=record.phone_number,
         id_card=record.id_card,
+        is_admin=record.is_admin,
     )
 
 
@@ -147,6 +161,7 @@ def create_user(
         present_address=present_address,
         phone_number=phone_number,
         id_card=id_card_clean or None,
+        is_admin=_is_admin_email(key),
         password_hash=_pwd_context.hash(password),
     )
     _users[key] = record
@@ -163,6 +178,9 @@ def authenticate_user(*, email: str, password: str) -> UserPublic:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
         )
+    # Retrofit is_admin if the email was added to ADMIN_EMAILS after signup.
+    if _is_admin_email(record.email) and not record.is_admin:
+        record.is_admin = True
     return _to_public(record)
 
 
@@ -176,6 +194,7 @@ def create_access_token(user: UserPublic) -> str:
     payload = {
         "sub": user.email,
         "name": user.full_name,
+        "is_admin": user.is_admin,
         "iat": int(now.timestamp()),
         "exp": int((now + _JWT_EXPIRY).timestamp()),
     }
@@ -211,3 +230,15 @@ def get_current_user(token: str = Depends(_oauth2_scheme)) -> UserPublic:
         # accept stale identities.
         raise _CREDENTIALS_EXC
     return _to_public(record)
+
+
+def get_current_admin(
+    current_user: UserPublic = Depends(get_current_user),
+) -> UserPublic:
+    """Dependency for admin-only routes. Returns 403 for non-admin tokens."""
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required.",
+        )
+    return current_user

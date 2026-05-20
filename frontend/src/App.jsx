@@ -118,11 +118,21 @@ function AuthProvider({ children }) {
   );
 
   const signup = useCallback(
-    async ({ email, password, full_name }) => {
+    async ({
+      email,
+      password,
+      full_name,
+      present_address,
+      phone_number,
+      id_card,
+    }) => {
       const data = await post("/api/auth/signup", {
         email,
         password,
         full_name,
+        present_address,
+        phone_number,
+        id_card,
       });
       persist({ user: data.user, token: data.access_token });
       return data.user;
@@ -474,8 +484,8 @@ function HomePage() {
             }}
           >
             File and track Right to Information requests with the Ministry of
-            Climate Change, Environment and Energy. Answers are sourced from
-            the official RTI vault and ministry records.
+            Climate Change, Environment and Energy. Answers are sourced from the
+            official RTI vault and ministry records.
           </p>
           <Link
             to="/requests/new"
@@ -1034,8 +1044,8 @@ function RequestDetailPage() {
                 }}
               >
                 <p style={{ margin: 0, color: "#92400e", fontWeight: 500 }}>
-                  No response yet. Public authorities have 30 days to respond
-                  to RTI requests.
+                  No response yet. Public authorities have 30 days to respond to
+                  RTI requests.
                 </p>
               </Card>
             );
@@ -1179,7 +1189,9 @@ function NewRequestPage() {
                 color: TEXT,
               }}
             >
-              <div style={{ color: MUTED, fontSize: "0.75rem", marginBottom: 2 }}>
+              <div
+                style={{ color: MUTED, fontSize: "0.75rem", marginBottom: 2 }}
+              >
                 Filing as
               </div>
               <div style={{ fontWeight: 600 }}>
@@ -1605,7 +1617,8 @@ function useAuthedFetch(path) {
           return;
         }
         const body = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(extractErrorMessage(body, `HTTP ${r.status}`));
+        if (!r.ok)
+          throw new Error(extractErrorMessage(body, `HTTP ${r.status}`));
         if (!cancelled) setData(body);
       })
       .catch((e) => {
@@ -1623,14 +1636,16 @@ function useAuthedFetch(path) {
 }
 
 function AdminInboxPage() {
-  const { data, loading, error } = useAuthedFetch("/api/admin/requests/pending");
+  const { data, loading, error } = useAuthedFetch(
+    "/api/admin/requests/pending",
+  );
 
   return (
     <PageWrapper>
       <PageTitle>Admin · Review Inbox</PageTitle>
       <Subtitle>
-        Requests awaiting human review, oldest first. AI drafts are listed
-        here pending approval, edit, or rejection.
+        Requests awaiting human review, oldest first. AI drafts are listed here
+        pending approval, edit, or rejection.
       </Subtitle>
 
       {loading && <Spinner />}
@@ -1706,7 +1721,9 @@ function AdminInboxPage() {
                     >
                       {req.subject}
                     </td>
-                    <td style={{ ...tdStyle, color: MUTED, whiteSpace: "nowrap" }}>
+                    <td
+                      style={{ ...tdStyle, color: MUTED, whiteSpace: "nowrap" }}
+                    >
                       {req.date_filed
                         ? new Date(req.date_filed).toLocaleDateString("en-IN", {
                             day: "2-digit",
@@ -1741,7 +1758,11 @@ function AdminRequestReviewPage() {
   const { id } = useParams();
   const { token } = useAuth();
   const navigate = useNavigate();
-  const { data: req, loading, error } = useAuthedFetch(`/api/admin/requests/${id}`);
+  const {
+    data: req,
+    loading,
+    error,
+  } = useAuthedFetch(`/api/admin/requests/${id}`);
 
   const [draft, setDraft] = useState("");
   const [rejectionReason, setRejectionReason] = useState("");
@@ -1765,7 +1786,8 @@ function AdminRequestReviewPage() {
       body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(extractErrorMessage(data, `HTTP ${res.status}`));
+    if (!res.ok)
+      throw new Error(extractErrorMessage(data, `HTTP ${res.status}`));
     return data;
   };
 
@@ -1898,7 +1920,9 @@ function AdminRequestReviewPage() {
           </Card>
 
           <Card style={{ marginBottom: 20 }}>
-            <SectionHeading>Rejection Reason (only when rejecting)</SectionHeading>
+            <SectionHeading>
+              Rejection Reason (only when rejecting)
+            </SectionHeading>
             <textarea
               value={rejectionReason}
               onChange={(e) => setRejectionReason(e.target.value)}

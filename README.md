@@ -20,53 +20,70 @@ A citizen-facing portal + ministry admin panel for filing and reviewing **Right 
 
 ---
 
-## How a Request Is Answered
+## How It Works
 
-When a citizen submits a request via `POST /api/requests`, the backend runs the following flow:
+### The citizen flow
 
-1. **Cache lookup.** A normalized key is built from the request text (`subject + description`, lowercased, punctuation stripped). If a previous request produced a draft for the same normalized text, that draft is reused — no LLM call.
-2. **Live retrieval (cache miss).** The AI step calls Claude Haiku 4.5 with web tools restricted to two domains, in strict priority order:
-   1. **`rtidhonbe.com`** — the RTI vault (preferred source).
-   2. **`environment.gov.mv`** — the ministry's official site (fallback, only used if the vault doesn't have the requested information).
-3. **Drafting.** Claude composes a response grounded in the content it retrieved, cites which source it used, and tells the citizen the next step if neither source has the answer.
-4. **Human review.** The request is saved with `status: "Under Review"` and the AI-generated draft in the `response` field. It now sits in the **admin inbox** awaiting a ministry officer's decision: approve as-is, edit-and-approve, or reject with a reason.
-5. **Officer action.** When the officer approves, status flips to `Responded` and the (possibly edited) text becomes the official response. Rejection sets status to `Rejected` and records the reason. Either action stamps `reviewed_by` + `reviewed_at` on the record.
+1. **Sign up** at `/signup` with name, email, phone, present address, and an optional national ID card number. Password is bcrypt-hashed server-side. Email is the unique account identifier (case-insensitive).
+2. **Sign in** and visit **File RTI** at `/requests/new`. The form pre-selects the only available department (the ministry); the citizen's identity is shown as a read-only "Filing as ..." header.
+3. **Submit a request** (subject + description). The backend kicks off the AI step and returns a record in status `Under Review`.
+4. **Track it** at `/requests/{id}`. While `Under Review`, the citizen sees the AI draft inside a purple **"Pending Officer Review"** card. Once an officer acts, the same page shows either a green **"Official Response"** card or a red **"Request Rejected"** card with the officer's reason.
 
-If the AI step fails (network, API error, etc.), the request is filed as `Pending` (no draft, no review state) so the citizen can still track it; the officer can then author a response by hand from the admin panel.
+### The AI drafting step
 
-**Authentication.** Filing an RTI request requires being signed in. The portal exposes a small JWT auth flow: sign up with a profile (see below), receive a bearer token, attach it to the `POST /api/requests` call. The citizen's name and email on the created record are taken from the JWT identity — they're not in the request payload, so a logged-in user can't file under someone else's name. Public reads (`GET /api/requests`, departments, FAQs, stats) remain open so anonymous browsing still works.
+When a citizen submits a request via `POST /api/requests`:
 
-**Signup profile.** The signup form collects:
+1. **Cache lookup.** A normalized key is built from the request text (lowercased, punctuation stripped, whitespace collapsed). If a previous request produced a draft for the same normalized text, that draft is reused — no LLM call. Cache hit: ~15 ms.
+2. **Live retrieval (cache miss).** Claude Haiku 4.5 is invoked with `web_search` + `web_fetch` restricted via `allowed_domains` to two sources, queried in strict priority order:
+   1. **`rtidhonbe.com`** — the RTI vault (preferred).
+   2. **`environment.gov.mv`** — the ministry's official site (fallback, only if the vault doesn't have it).
+3. **Drafting.** Claude composes a response grounded in retrieved content, cites which source it used, and tells the citizen the next step if neither source has the answer. Cache miss: typically 15–30 s end-to-end.
+4. **Storage.** The request is saved with `status: "Under Review"`, the draft in the `response` field, and the citizen's profile snapshotted onto the record (`citizen_phone`, `citizen_address`, `citizen_id_card`).
+5. **AI failure fallback.** If the LLM call errors out (network, quota), the request is filed as `Pending` with no draft — the officer can author a response by hand from the admin panel.
+
+The AI is instructed never to invent figures, names, dates, or document references. If neither source has the answer, it says so plainly and directs the citizen to file a formal RTI application.
+
+### The admin (human-in-the-loop) review
+
+Officers are bootstrapped via the `ADMIN_EMAILS` env var (comma-separated). When a user with a matching email signs up or logs in, their JWT carries `is_admin: true` and the navbar exposes a purple **Admin** link.
+
+- **`/admin`** — Inbox of all `Under Review` requests, oldest first.
+- **`/admin/requests/{id}`** — Full review view:
+  - **Citizen profile card** — snapshot of name, email, phone, present address, ID card at filing time.
+  - **Filing card** — department, dates, and the review audit trail (`reviewed_by`, `reviewed_at`).
+  - **Original RTI** — the subject + description as written.
+  - **AI Draft Response (editable)** — a textarea pre-filled with the AI's draft.
+  - **Rejection Reason** — used by the Reject action.
+  - **Three actions:** **Save Draft** (keep `Under Review`), **Reject** (status → `Rejected`, requires a non-empty reason), **Approve & Publish** (status → `Responded`, uses the edited draft text). Any action stamps `reviewed_by` (the officer's email) and `reviewed_at`.
+
+### Example AI draft
+
+A real request for *"current installed renewable energy capacity and national targets"* returned:
+
+> Based on the Ministry's published Energy Policy and Strategy 2024–2029, the Maldives has an installed electricity capacity of 600 MW, of which 68.5 MW comes from solar PV (~6% of national consumption). At COP28 the government committed to sourcing 33% of national electricity from renewables by 2028. The RTI vault did not have this information; it was retrieved from environment.gov.mv.
+
+---
+
+## Auth & Privacy Model
+
+- **Citizen-facing endpoints** (signup, login, public GETs) are open to anyone. Filing a request requires a bearer token.
+- **Admin endpoints** (`/api/admin/*`) require the JWT to carry `is_admin: true` — otherwise 403.
+- **JWT identity override** — `POST /api/requests` ignores any `citizen_name` / `email` an attacker tries to slip into the body. Both are taken from the authenticated user. Profile snapshot fields (phone, address, ID card) are also pulled from the user record, not the payload.
+- **Privacy-scoped public projection** — `GET /api/requests` and `GET /api/requests/{id}` return `PublicRTIRequest`, which omits the profile snapshot (`citizen_phone`, `citizen_address`, `citizen_id_card`) and the review audit fields (`reviewed_by`, `reviewed_at`). The full record is only exposed through admin endpoints.
+- **Token expiry** — 24 hours, HS256. Secret is `JWT_SECRET_KEY`; missing → an insecure dev fallback is used (with a startup warning).
+
+### Signup profile
 
 | Field | Required | Notes |
 |---|---|---|
 | Name (`full_name`) | ✅ | Used as the citizen name on filed RTI requests |
-| Email | ✅ | Used as the unique account identifier; normalized to lowercase |
+| Email | ✅ | Unique account identifier; normalized to lowercase |
 | Phone number | ✅ | Free-form string (e.g. `+960 7771234`) |
 | Present address | ✅ | Free-form string |
 | ID card | — | Optional national ID number |
-| Password | ✅ | Minimum 8 characters; bcrypt-hashed on the server |
+| Password | ✅ | Minimum 8 characters; bcrypt-hashed |
 
 Whitespace-only values are rejected by the server. The full profile is returned on `/api/auth/me`.
-
-**Admin panel.** A user becomes a ministry officer (admin) when their email is listed in the `ADMIN_EMAILS` env var (comma-separated). Matching users get `is_admin: true` on signup or login, the JWT carries the admin claim, and the navbar exposes an **Admin** link.
-
-The admin UI lives at `/admin`:
-
-- **`/admin`** — Inbox of requests in `Under Review`, oldest first.
-- **`/admin/requests/{id}`** — Full review view: citizen profile snapshot (name, email, phone, address, ID card), the original RTI question, an editable AI draft, a rejection-reason field, and three actions: **Save Draft** (keep status as Under Review), **Reject** (status → Rejected, requires a reason), **Approve & Publish** (status → Responded, uses the edited draft).
-
-Non-admin tokens are rejected from all `/api/admin/*` endpoints with a 403. The full record (including the citizen profile snapshot and the review audit fields `reviewed_by` / `reviewed_at`) is exposed **only** on admin endpoints; the public GET endpoints return a privacy-scoped projection (`PublicRTIRequest`) that omits the profile snapshot and audit fields.
-
-**Expected latency.** A cache miss takes roughly **15–30 seconds** end-to-end — the model runs several rounds of `web_search` and `web_fetch` against the two domains before drafting. A cache hit returns in **~15 ms**.
-
-### Example response shape
-
-A real request for *"current installed renewable energy capacity and national targets"* returns content like:
-
-> Based on the Ministry's published Energy Policy and Strategy 2024–2029, the Maldives has an installed electricity capacity of 600 MW, of which 68.5 MW comes from solar PV (~6% of national consumption). At COP28 the government committed to sourcing 33% of national electricity from renewables by 2028. The RTI vault did not have this information; it was retrieved from environment.gov.mv.
-
-Where neither source has the answer, the model says so plainly and directs the citizen to file a formal RTI application with the ministry's Information Officer.
 
 ---
 
@@ -78,16 +95,16 @@ RTI4All/
 ├── backend/
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   ├── main.py               # FastAPI application + routes
+│   ├── main.py               # FastAPI app: routes, citizen + admin endpoints
 │   ├── ai.py                 # Claude call with web_search / web_fetch
-│   ├── auth.py               # JWT + bcrypt + in-memory user store
+│   ├── auth.py               # JWT + bcrypt + admin bootstrap + user store
 │   ├── cache.py              # In-memory normalized-text query cache
 │   ├── data/
-│   │   └── sample_data.json  # One ministry + sample requests + FAQs
+│   │   └── sample_data.json  # The ministry + seed requests + FAQs
 │   └── tests/
-│       ├── conftest.py       # Shared TestClient fixture (stubbed AI, no admins)
-│       ├── test_auth.py      # Pytest coverage of the auth flow (15 tests)
-│       └── test_admin.py     # Pytest coverage of the admin workflow (12 tests)
+│       ├── conftest.py       # Shared TestClient fixture (stubbed AI)
+│       ├── test_auth.py      # Auth flow coverage (15 tests)
+│       └── test_admin.py     # Admin workflow coverage (12 tests)
 └── frontend/
     ├── Dockerfile
     ├── package.json
@@ -95,7 +112,7 @@ RTI4All/
     ├── index.html
     └── src/
         ├── main.jsx
-        └── App.jsx           # Pages + routing + AuthProvider / RequireAuth
+        └── App.jsx           # All pages, routing, AuthProvider, Require* gates
 ```
 
 ---
@@ -104,25 +121,26 @@ RTI4All/
 
 ### Prerequisites
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
-- (Optional but recommended) An Anthropic API key with web-tools access — without one, the AI step falls back to a stub message
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running.
+- (Optional but recommended) An Anthropic API key with web-tools access. Without one, the AI step returns a clearly-labelled stub message.
 
-### Configure the AI key, JWT secret, and admin emails
+### Configure environment
 
-Export these before `docker compose up`. Compose passes them through to the backend container automatically.
+Export these in your shell before `docker compose up`. Compose forwards them into the backend container automatically.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-export JWT_SECRET_KEY=$(openssl rand -hex 32)   # or any high-entropy secret
-export ADMIN_EMAILS=officer@gov.mv,supervisor@gov.mv  # ministry officers
+export JWT_SECRET_KEY=$(openssl rand -hex 32)        # any high-entropy secret
+export ADMIN_EMAILS=officer@gov.mv,supervisor@gov.mv # ministry officers
 ```
 
-`JWT_SECRET_KEY` unset → the backend logs a warning and uses an insecure dev fallback (never run that in production). `ADMIN_EMAILS` unset → no admins exist, so the admin panel is inaccessible until you set it. Emails are matched case-insensitively against the email used at signup.
+- `ANTHROPIC_API_KEY` unset → AI step returns a stub; everything else still works.
+- `JWT_SECRET_KEY` unset → backend logs a warning and uses an insecure dev fallback. **Never run that in production.**
+- `ADMIN_EMAILS` unset → no admins exist, so the admin panel is inaccessible. Matching is case-insensitive against the email used at signup, and is re-checked at login so adding emails after a user signed up retrofits them on next login.
 
-### Run with Docker Compose
+### Run
 
 ```bash
-# From the project root
 docker compose up --build
 ```
 
@@ -130,65 +148,70 @@ docker compose up --build
 |---|---|
 | Frontend | http://localhost:5173 |
 | Backend API | http://localhost:8000 |
-| API Docs (Swagger) | http://localhost:8000/docs |
+| API docs (Swagger) | http://localhost:8000/docs |
 
-### Stop
-
-```bash
-docker compose down
-```
+Stop with `docker compose down`.
 
 ### Run the test suite
-
-The backend test suite covers the JWT auth flow end-to-end. Run it inside the backend container:
 
 ```bash
 docker exec rti4all-backend python -m pytest tests/ -v
 ```
 
-The 27 tests cover:
+**27 tests, AI step stubbed** (no Anthropic quota burned):
 
-- **Auth (`test_auth.py`):** signup success, duplicate-email rejection, invalid-email rejection, missing required profile fields rejected, optional `id_card` omitted accepted, whitespace-only required fields rejected; login with valid credentials / wrong password / unknown user; `POST /api/requests` protection (no token, malformed token, valid token); JWT identity override (server overwrites any `citizen_name`/`email` attacker tries to slip in); `/auth/me` returns the full profile; public reads remain open.
-- **Admin (`test_admin.py`):** `ADMIN_EMAILS` bootstraps `is_admin` at signup, non-admin emails aren't promoted, the flag surfaces on `/auth/me`; admin endpoints reject unauthenticated and non-admin tokens; new requests land in `Under Review` with profile snapshotted; admin inbox lists pending requests; admin can edit + approve (stamps `reviewed_by`/`reviewed_at`); admin can reject with reason; empty PATCH bodies and invalid status values are rejected; PATCH on unknown ID returns 404.
-
-The AI step is stubbed in the tests, so they don't burn an Anthropic API quota.
+- **`test_auth.py` — 15 tests.** Signup success / duplicate-email / invalid-email / missing required profile field / optional `id_card` omitted / whitespace-only rejected; login with valid / wrong-password / unknown-email; `POST /api/requests` protection (no token / malformed / valid); JWT identity override (server discards attacker-supplied `citizen_name` / `email`); `/auth/me` returns full profile; public reads remain open.
+- **`test_admin.py` — 12 tests.** `ADMIN_EMAILS` bootstraps `is_admin` at signup, non-admin emails aren't promoted, flag surfaces on `/auth/me`; admin endpoints reject unauthenticated and non-admin tokens; new requests land in `Under Review` with profile snapshotted; inbox lists pending; admin can edit + approve (stamps reviewer + timestamp); admin can reject with reason; empty PATCH and invalid status rejected; PATCH on unknown ID → 404.
 
 ---
 
-## API Endpoints
+## API Reference
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/api/health` | — | Health check |
 | POST | `/api/auth/signup` | — | Create an account; returns `{access_token, user}` |
 | POST | `/api/auth/login` | — | Authenticate; returns `{access_token, user}` |
-| GET | `/api/auth/me` | **Bearer** | Return the currently signed-in user |
-| GET | `/api/requests` | — | List all RTI requests (filter by `status`, `department_id`); returns the privacy-scoped projection |
-| GET | `/api/requests/{id}` | — | Get a single RTI request (privacy-scoped projection) |
-| POST | `/api/requests` | **Bearer** | File a new RTI request — triggers cache lookup or live AI retrieval. Citizen name + email are pulled from the JWT identity; profile snapshot (phone, address, ID card) is also copied from the JWT user onto the record |
-| GET | `/api/admin/requests/pending` | **Admin** | Inbox of `Under Review` requests, oldest first; full record |
-| GET | `/api/admin/requests/{id}` | **Admin** | Full record (includes profile snapshot + audit fields) |
-| PATCH | `/api/admin/requests/{id}` | **Admin** | Edit response, change status (`Under Review` → `Responded` or `Rejected`), and/or set rejection reason; stamps `reviewed_by` + `reviewed_at` |
+| GET | `/api/auth/me` | **Bearer** | Return the currently signed-in user (incl. `is_admin`) |
+| GET | `/api/requests` | — | List all RTI requests (filter by `status`, `department_id`). Privacy-scoped projection |
+| GET | `/api/requests/{id}` | — | Get a single RTI request. Privacy-scoped projection |
+| POST | `/api/requests` | **Bearer** | File a new RTI request. Triggers cache lookup or live AI retrieval. Citizen identity + profile snapshot come from the JWT, not the body |
+| GET | `/api/admin/requests/pending` | **Admin** | Inbox of `Under Review` requests, oldest first. Full record |
+| GET | `/api/admin/requests/{id}` | **Admin** | Single request, full record (profile snapshot + audit fields) |
+| PATCH | `/api/admin/requests/{id}` | **Admin** | Edit response, change status, set rejection reason. Stamps `reviewed_by` + `reviewed_at` |
 | GET | `/api/departments` | — | List departments (a single entry: the ministry) |
 | GET | `/api/departments/{id}` | — | Get a single department |
 | GET | `/api/faqs` | — | List all FAQs |
-| GET | `/api/stats` | — | Summary stats (totals by status) |
+| GET | `/api/stats` | — | Summary stats: `total_requests`, `pending`, `in_progress`, `under_review`, `responded`, `rejected`, `total_departments` |
 
-Tokens are 24-hour HS256 JWTs. Send them as `Authorization: Bearer <token>` on the protected endpoints. Admin endpoints additionally require the JWT to carry `is_admin: true` — non-admin tokens get 403.
+Send tokens as `Authorization: Bearer <token>`. **Admin** rows additionally require `is_admin: true` in the JWT — non-admin tokens get 403.
+
+### Status values
+
+| Status | When |
+|---|---|
+| `Pending` | AI step failed; awaits human authoring |
+| `In Progress` | Legacy / seeded only — never set by the live flow |
+| `Under Review` | AI draft prepared; awaiting officer approval |
+| `Responded` | Officer approved (possibly after editing the draft) |
+| `Rejected` | Officer rejected — `rejection_reason` is populated |
 
 ---
 
-## Notes
+## Implementation Notes
 
-- All state is **in-memory** — restarting the backend resets any newly filed requests *and* the query cache to the seed data.
-- The AI is strictly instructed to **try rtidhonbe.com first** and only fall back to `environment.gov.mv` if the vault doesn't contain the requested information. It is told not to invent figures, names, dates, or document references — if neither source has the answer, it says so and points the citizen at the next step.
-- Web search and web fetch are server-side Anthropic tools and are billed separately from input/output tokens. Both are restricted to the two configured sites via `allowed_domains`. On Haiku 4.5 they run in `allowed_callers=["direct"]` mode (the model doesn't support the dynamic-filtering / programmatic-tool-calling default).
-- Only the text emitted **after the last tool-use block** is returned to the citizen — intermediate planning text the model produces between search rounds is filtered out.
-- The Vite dev server proxies all `/api/*` requests to the backend container, so no CORS issues in the browser.
+- **Single-ministry mode.** Only one department exists (`moccee`). The File RTI form auto-fills the department and shows it as a read-only chip instead of a dropdown.
+- **Caching.** Exact normalized match (lowercase, stripped punctuation, collapsed whitespace) keyed on `(department_id, subject + description)`. Identical re-submissions reuse the prior draft instantly. Paraphrases are treated as new and incur a fresh AI call.
+- **Why `allowed_callers=["direct"]` on the web tools.** Haiku 4.5 doesn't support the dynamic-filtering / programmatic-tool-calling mode that the `_20260209` web tools default to — `direct` puts them in the classic tool-use loop that Haiku supports.
+- **Final-block extraction.** Only the text Claude emits *after* the last tool-use block in the response is returned to the citizen. Intermediate "I'll search..." narration emitted between tool rounds is filtered out so it doesn't leak into the citizen-facing response.
+- **Vite proxy.** The dev server proxies all `/api/*` to the backend container, so the browser never makes cross-origin requests.
 
-### Limitations
+---
 
-- **Cache is exact-match.** Lowercase + punctuation-stripped + whitespace-collapsed on `(department_id, subject + description)`. Paraphrases (*"plastic ban enforcement 2024"* vs *"single-use plastic enforcement actions in 2024"*) don't dedupe — each will hit the AI fresh.
-- **Two sources only.** The model cannot reach anything outside `rtidhonbe.com` and `environment.gov.mv`. If neither has the information, the citizen is directed to the formal RTI application process.
-- **Latency on cache miss** is dominated by web round-trips (15–30 s typical, longer for complex queries).
-- **Restart wipes state.** Newly filed requests and the query cache live in process memory — no database, no disk persistence.
+## Limitations
+
+- **Cache is exact-match.** Paraphrased queries don't dedupe — *"plastic ban enforcement 2024"* and *"single-use plastic enforcement actions in 2024"* will each call the AI.
+- **Two sources only.** The model is hard-walled to `rtidhonbe.com` and `environment.gov.mv`. If neither has the information, the response directs the citizen to file a formal RTI application.
+- **Latency on cache miss** is dominated by real web round-trips (15–30 s typical, longer for complex queries).
+- **Restart wipes state.** Users, filed requests, and the query cache all live in process memory — no database, no disk persistence. Re-bootstrap by signing up again.
+- **Web tools billed separately.** `web_search` and `web_fetch` are server-side Anthropic tools and count against your Anthropic web-tool quota independently from input/output tokens.

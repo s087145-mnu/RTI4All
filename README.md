@@ -1,8 +1,8 @@
-# RTI4All
+# RTI4All — Ministry of Climate Change, Environment and Energy
 
 **Colab26 Hackathon — Team 9**
 
-A citizen-facing portal to file and track **Right to Information (RTI)** requests across government departments. Filed requests are answered immediately by an AI assistant grounded in source materials (prior responded requests, FAQs).
+A citizen-facing portal to file and track **Right to Information (RTI)** requests with the Maldives [Ministry of Climate Change, Environment and Energy](https://environment.gov.mv). Filed requests are answered immediately by an AI assistant that retrieves information live from the official sources.
 
 ---
 
@@ -12,7 +12,7 @@ A citizen-facing portal to file and track **Right to Information (RTI)** request
 |---|---|
 | Frontend | React 18 + Vite (JavaScript) |
 | Backend | Python 3.11 + FastAPI |
-| AI | Anthropic Claude Haiku 4.5 via the `anthropic` SDK |
+| AI | Anthropic Claude Haiku 4.5 with server-side `web_search` + `web_fetch` |
 | Data | In-memory sample JSON (no database) |
 | Container | Docker + Docker Compose |
 
@@ -20,17 +20,16 @@ A citizen-facing portal to file and track **Right to Information (RTI)** request
 
 ## How a Request Is Answered
 
-When a citizen submits a new RTI request via `POST /api/requests`:
+When a citizen submits a request via `POST /api/requests`, the backend runs the following flow:
 
-1. The department is validated and the request is assigned an ID.
-2. A normalized cache key is built from `(department_id, subject + description)`.
-3. **Cache hit** — the previously generated answer is reused; no LLM call.
-4. **Cache miss** — the configured `DataSource` retrieves relevant source materials (FAQs + prior `Responded` requests in the same department), the AI step calls Claude Haiku 4.5 with those materials as grounding, and the answer is stored in the cache.
-5. The request is recorded with `status: "Responded"` and the AI-generated text in the `response` field.
+1. **Cache lookup.** A normalized key is built from the request text (`subject + description`, lowercased, punctuation stripped). If a previous request produced an answer for the same normalized text, that answer is reused — no LLM call.
+2. **Live retrieval (cache miss).** The AI step calls Claude Haiku 4.5 with web tools restricted to two domains, in strict priority order:
+   1. **`rtidhonbe.com`** — the RTI vault (preferred source).
+   2. **`environment.gov.mv`** — the ministry's official site (fallback, only used if the vault doesn't have the requested information).
+3. **Drafting.** Claude composes a response grounded in the content it retrieved, cites which source it used, and tells the citizen the next step if neither source has the answer.
+4. **Storage.** The request is saved with `status: "Responded"` and the AI-generated answer in the `response` field. The (query → answer) pair is stored in the cache for future lookups with the same text.
 
-If `ANTHROPIC_API_KEY` is not set, the AI step returns a clearly-labelled stub so the app still runs offline; the request is filed as `Pending`.
-
-The `DataSource` is a `Protocol` in `backend/data_source.py` — the current `SampleDataSource` reads from the in-memory JSON; a future implementation can hit real government APIs without changing any caller.
+If the AI step fails (network, API error, etc.), the request is filed as `Pending` so the citizen can still track it. If `ANTHROPIC_API_KEY` is unset, the AI step returns a clearly-labelled stub.
 
 ---
 
@@ -43,11 +42,10 @@ RTI4All/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── main.py               # FastAPI application + routes
-│   ├── ai.py                 # Anthropic SDK call, grounded prompt
+│   ├── ai.py                 # Claude call with web_search / web_fetch
 │   ├── cache.py              # In-memory normalized-text query cache
-│   ├── data_source.py        # DataSource Protocol + SampleDataSource
 │   └── data/
-│       └── sample_data.json  # Seed data (departments, requests, FAQs)
+│       └── sample_data.json  # One ministry + sample requests + FAQs
 └── frontend/
     ├── Dockerfile
     ├── package.json
@@ -65,7 +63,7 @@ RTI4All/
 ### Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
-- (Optional) An Anthropic API key — without one, the AI step falls back to a stub message
+- (Optional but recommended) An Anthropic API key with web-tools access — without one, the AI step falls back to a stub message
 
 ### Configure the AI key
 
@@ -78,7 +76,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ### Run with Docker Compose
 
 ```bash
-# From the project root (RTI4All/)
+# From the project root
 docker compose up --build
 ```
 
@@ -103,8 +101,8 @@ docker compose down
 | GET | `/api/health` | Health check |
 | GET | `/api/requests` | List all RTI requests (filter by `status`, `department_id`) |
 | GET | `/api/requests/{id}` | Get a single RTI request |
-| POST | `/api/requests` | File a new RTI request — triggers cache lookup or AI answer, returns the created record (typically `status: "Responded"`) |
-| GET | `/api/departments` | List all departments |
+| POST | `/api/requests` | File a new RTI request — triggers cache lookup or live AI retrieval, returns the created record (typically `status: "Responded"`) |
+| GET | `/api/departments` | List departments (a single entry: the ministry) |
 | GET | `/api/departments/{id}` | Get a single department |
 | GET | `/api/faqs` | List all FAQs |
 | GET | `/api/stats` | Summary stats (totals by status) |
@@ -113,8 +111,8 @@ docker compose down
 
 ## Notes
 
-- All data is **in-memory** — restarting the backend resets any newly filed requests *and* the query cache to the seed data.
-- The query cache uses **exact normalized match** (lowercase, stripped punctuation, collapsed whitespace) on `(department_id, subject + description)`. Paraphrased queries are treated as distinct.
-- The AI is instructed to **stay grounded in the provided source materials** and to say so when the requested information is not in the sources, rather than inventing figures or document references.
+- All state is **in-memory** — restarting the backend resets any newly filed requests *and* the query cache to the seed data.
+- The query cache uses **exact normalized match** (lowercase, stripped punctuation, collapsed whitespace) on the request text. Identical re-submissions reuse the prior answer instantly; paraphrased queries are treated as new and incur a fresh AI lookup.
+- The AI is strictly instructed to **try rtidhonbe.com first** and only fall back to `environment.gov.mv` if the vault doesn't contain the requested information. It is told not to invent figures, names, dates, or document references — if neither source has the answer, it says so and points the citizen at the next step.
+- Web search and web fetch are server-side Anthropic tools and are billed separately from input/output tokens. Both are restricted via `allowed_domains` to the two configured sites.
 - The Vite dev server proxies all `/api/*` requests to the backend container, so no CORS issues in the browser.
-- To swap to a real government API later: implement the `DataSource` protocol in `backend/data_source.py` and wire it up at startup in `backend/main.py`.

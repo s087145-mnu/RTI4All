@@ -209,7 +209,7 @@ function Navbar() {
             RTI4All
           </span>
           <span style={{ color: MUTED, fontSize: "0.8rem", fontWeight: 400 }}>
-            Right to Information for All
+            Ministry of Climate Change, Environment and Energy · RTI Portal
           </span>
         </Link>
 
@@ -272,8 +272,9 @@ function HomePage() {
               marginBottom: 36,
             }}
           >
-            File, track, and manage your Right to Information requests with
-            ease. Transparency and accountability — for every citizen.
+            File and track Right to Information requests with the Ministry of
+            Climate Change, Environment and Energy. Answers are sourced from
+            the official RTI vault and ministry records.
           </p>
           <Link
             to="/requests/new"
@@ -861,6 +862,15 @@ function NewRequestPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
 
+  // Single-ministry portal: auto-fill department_id from the only entry.
+  const onlyDepartment =
+    departments && departments.length === 1 ? departments[0] : null;
+  useEffect(() => {
+    if (onlyDepartment && !form.department_id) {
+      setForm((f) => ({ ...f, department_id: onlyDepartment.id }));
+    }
+  }, [onlyDepartment, form.department_id]);
+
   const handleChange = (e) =>
     setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
 
@@ -951,21 +961,35 @@ function NewRequestPage() {
             </div>
 
             <div style={fieldStyle}>
-              <label style={labelStyle}>Department *</label>
-              <select
-                name="department_id"
-                required
-                value={form.department_id}
-                onChange={handleChange}
-                style={inputStyle()}
-              >
-                <option value="">— Select a department —</option>
-                {(departments ?? []).map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                  </option>
-                ))}
-              </select>
+              <label style={labelStyle}>Filing With</label>
+              {onlyDepartment ? (
+                <div
+                  style={{
+                    ...inputStyle(),
+                    background: BG,
+                    color: TEXT,
+                    fontWeight: 500,
+                    cursor: "default",
+                  }}
+                >
+                  {onlyDepartment.name}
+                </div>
+              ) : (
+                <select
+                  name="department_id"
+                  required
+                  value={form.department_id}
+                  onChange={handleChange}
+                  style={inputStyle()}
+                >
+                  <option value="">— Select a department —</option>
+                  {(departments ?? []).map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div style={fieldStyle}>

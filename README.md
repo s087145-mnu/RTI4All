@@ -13,6 +13,7 @@ A citizen-facing portal + ministry admin panel for filing and reviewing **Right 
 | Frontend | React 18 + Vite (JavaScript) |
 | Backend | Python 3.11 + FastAPI |
 | AI | Anthropic Claude Haiku 4.5 with server-side `web_search` + `web_fetch` |
+| RAG | `sentence-transformers` (`all-MiniLM-L6-v2`), in-memory numpy cosine index |
 | Auth | JWT (HS256) via `python-jose`, bcrypt password hashing via `passlib` |
 | Data | In-memory sample JSON + in-memory user store (no database) |
 | Container | Docker + Docker Compose |
@@ -34,14 +35,27 @@ A citizen-facing portal + ministry admin panel for filing and reviewing **Right 
 When a citizen submits a request via `POST /api/requests`:
 
 1. **Cache lookup.** A normalized key is built from the request text (lowercased, punctuation stripped, whitespace collapsed). If a previous request produced a draft for the same normalized text, that draft is reused — no LLM call. Cache hit: ~15 ms.
-2. **Live retrieval (cache miss).** Claude Haiku 4.5 is invoked with `web_search` + `web_fetch` restricted via `allowed_domains` to two sources, queried in strict priority order:
+2. **RAG retrieval.** The query (subject + description) is embedded and the top-k items are pulled from the in-memory vector index over the ministry's local archive — past responded RTIs (precedent) + standing FAQs (process knowledge). See "The RAG pipeline" below.
+3. **LLM call.** Claude Haiku 4.5 is invoked with the retrieved archive items injected into the system prompt **and** server-side `web_search` + `web_fetch` tools restricted via `allowed_domains` to two sources, queried in strict priority order:
    1. **`rtidhonbe.com`** — the RTI vault (preferred).
    2. **`environment.gov.mv`** — the ministry's official site (fallback, only if the vault doesn't have it).
-3. **Drafting.** Claude composes a response grounded in retrieved content, cites which source it used, and tells the citizen the next step if neither source has the answer. Cache miss: typically 15–30 s end-to-end.
-4. **Storage.** The request is saved with `status: "Under Review"`, the draft in the `response` field, and the citizen's profile snapshotted onto the record (`citizen_phone`, `citizen_address`, `citizen_id_card`).
-5. **AI failure fallback.** If the LLM call errors out (network, quota), the request is filed as `Pending` with no draft — the officer can author a response by hand from the admin panel.
+4. **Drafting.** Claude prefers archive precedent when it directly answers the question, otherwise grounds the response in web-retrieved content. Cites the source(s) it used (a prior RTI id, a FAQ id, or the domain it fetched). Cache miss: typically 15–30 s end-to-end.
+5. **Storage.** The request is saved with `status: "Under Review"`, the draft in the `response` field, and the citizen's profile snapshotted onto the record (`citizen_phone`, `citizen_address`, `citizen_id_card`).
+6. **AI failure fallback.** If the LLM call errors out (network, quota), the request is filed as `Pending` with no draft — the officer can author a response by hand from the admin panel.
 
 The AI is instructed never to invent figures, names, dates, or document references. If neither source has the answer, it says so plainly and directs the citizen to file a formal RTI application.
+
+### The RAG pipeline
+
+A small, dependency-light RAG layer grounds drafts in the ministry's own archive before any web retrieval happens:
+
+- **Corpus**: built at startup from `data/sample_data.json`. Each **responded** RTI request becomes one chunk (`subject + description + official response`); each FAQ becomes one chunk (`question + answer`). Pending / Under Review / Rejected requests are excluded — only items that survived officer approval are treated as precedent.
+- **Embedding model**: `sentence-transformers/all-MiniLM-L6-v2` (≈90 MB, CPU-only). The model is pre-downloaded into the Docker image so containers start without a first-request stall. No external embedding API is used.
+- **Index**: a single in-memory `numpy.float32` matrix of L2-normalized vectors. Retrieval is plain dot-product cosine over the whole matrix. Plenty fast at the scale of "all of one ministry's RTI history".
+- **Retrieval-into-prompt**: the top-4 hits are formatted as a `MINISTRY ARCHIVE:` block and embedded directly into the system prompt. Each entry shows the source kind (request / FAQ), id, and content so the model can cite it.
+- **Feedback loop**: when an officer **approves** a request, `index_responded_request(...)` adds the (possibly edited) final response to the index. Future similar questions retrieve it as precedent. Rejected requests are **not** indexed.
+
+Swapping the embedder is a one-line change — `RAGIndex` takes any object that implements `embed(texts: list[str]) -> np.ndarray` (L2-normalized). Tests use a deterministic `BagOfWordsEmbedder` so they don't load PyTorch.
 
 ### The admin (human-in-the-loop) review
 
@@ -96,15 +110,17 @@ RTI4All/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── main.py               # FastAPI app: routes, citizen + admin endpoints
-│   ├── ai.py                 # Claude call with web_search / web_fetch
+│   ├── ai.py                 # Claude call: RAG retrieval + web_search/web_fetch
 │   ├── auth.py               # JWT + bcrypt + admin bootstrap + user store
 │   ├── cache.py              # In-memory normalized-text query cache
+│   ├── rag.py                # Embedder + numpy cosine index + DB-population helpers
 │   ├── data/
 │   │   └── sample_data.json  # The ministry + seed requests + FAQs
 │   └── tests/
-│       ├── conftest.py       # Shared TestClient fixture (stubbed AI)
+│       ├── conftest.py       # Shared fixture: stubbed AI, BagOfWords embedder
 │       ├── test_auth.py      # Auth flow coverage (15 tests)
-│       └── test_admin.py     # Admin workflow coverage (12 tests)
+│       ├── test_admin.py     # Admin workflow coverage (12 tests)
+│       └── test_rag.py       # RAG pipeline coverage (10 tests)
 └── frontend/
     ├── Dockerfile
     ├── package.json
@@ -158,10 +174,11 @@ Stop with `docker compose down`.
 docker exec rti4all-backend python -m pytest tests/ -v
 ```
 
-**27 tests, AI step stubbed** (no Anthropic quota burned):
+**37 tests, AI step stubbed + sentence-transformers stubbed** (no Anthropic quota burned, no model load):
 
 - **`test_auth.py` — 15 tests.** Signup success / duplicate-email / invalid-email / missing required profile field / optional `id_card` omitted / whitespace-only rejected; login with valid / wrong-password / unknown-email; `POST /api/requests` protection (no token / malformed / valid); JWT identity override (server discards attacker-supplied `citizen_name` / `email`); `/auth/me` returns full profile; public reads remain open.
 - **`test_admin.py` — 12 tests.** `ADMIN_EMAILS` bootstraps `is_admin` at signup, non-admin emails aren't promoted, flag surfaces on `/auth/me`; admin endpoints reject unauthenticated and non-admin tokens; new requests land in `Under Review` with profile snapshotted; inbox lists pending; admin can edit + approve (stamps reviewer + timestamp); admin can reject with reason; empty PATCH and invalid status rejected; PATCH on unknown ID → 404.
+- **`test_rag.py` — 10 tests.** Stubbed `BagOfWordsEmbedder` is deterministic, normalized, and ranks similar texts higher than unrelated ones; `RAGIndex.upsert` / `retrieve` returns top-k by cosine; upsert replaces by id; empty / blank queries are handled; `populate_from_db` loads only responded requests + all FAQs; startup seeds the index; admin **approval** adds the request (and a marker phrase becomes retrievable); admin **rejection** does not add to the index.
 
 ---
 
@@ -210,7 +227,8 @@ Send tokens as `Authorization: Bearer <token>`. **Admin** rows additionally requ
 
 ## Limitations
 
-- **Cache is exact-match.** Paraphrased queries don't dedupe — *"plastic ban enforcement 2024"* and *"single-use plastic enforcement actions in 2024"* will each call the AI.
+- **Cache is exact-match.** Paraphrased queries don't dedupe — *"plastic ban enforcement 2024"* and *"single-use plastic enforcement actions in 2024"* will each call the AI. (The RAG layer **does** match paraphrases, but only for retrieving precedent; it doesn't short-circuit the LLM call.)
+- **RAG corpus is small.** With one ministry's mock data, the archive starts at 10 chunks (3 responded RTIs + 7 FAQs) and grows by one per officer approval. Retrieval quality scales with the corpus — for production, seed the index with real ministry RTI history and longer policy documents.
 - **Two sources only.** The model is hard-walled to `rtidhonbe.com` and `environment.gov.mv`. If neither has the information, the response directs the citizen to file a formal RTI application.
 - **Latency on cache miss** is dominated by real web round-trips (15–30 s typical, longer for complex queries).
 - **Restart wipes state.** Users, filed requests, and the query cache all live in process memory — no database, no disk persistence. Re-bootstrap by signing up again.

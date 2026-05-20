@@ -28,6 +28,12 @@ from auth import (
     get_current_user,
 )
 from cache import QueryCache
+from rag import (
+    RAGIndex,
+    SentenceTransformersEmbedder,
+    index_responded_request,
+    populate_from_db,
+)
 
 log = logging.getLogger(__name__)
 
@@ -57,17 +63,20 @@ DATA_FILE = Path(__file__).parent / "data" / "sample_data.json"
 
 _db: dict = {}
 _query_cache = QueryCache()
+_rag_index = RAGIndex(SentenceTransformersEmbedder())
 
 
 @app.on_event("startup")
 def load_data() -> None:
-    """Load all seed data from the JSON file into memory."""
+    """Load all seed data from the JSON file and build the RAG index."""
     with open(DATA_FILE, encoding="utf-8") as fh:
         _db.update(json.load(fh))
+    populate_from_db(_rag_index, _db)
     print(
         f"[startup] Loaded {len(_db['requests'])} requests, "
         f"{len(_db['departments'])} departments, "
-        f"{len(_db['faqs'])} FAQs."
+        f"{len(_db['faqs'])} FAQs. "
+        f"RAG index: {len(_rag_index)} items."
     )
 
 
@@ -362,7 +371,11 @@ def _generate_answer(
         return cached, "Under Review"
 
     try:
-        answer = answer_request(subject=subject, description=description)
+        answer = answer_request(
+            subject=subject,
+            description=description,
+            rag_index=_rag_index,
+        )
     except Exception:
         log.exception("AI answer step failed; filing request as Pending.")
         return None, "Pending"
@@ -527,5 +540,9 @@ def admin_update_request(
     target["date_updated"] = today
     target["reviewed_by"] = admin.email
     target["reviewed_at"] = today
+
+    # Feedback loop: approved responses become precedent for future RAG retrievals.
+    if target.get("status") == "Responded":
+        index_responded_request(_rag_index, target)
 
     return target

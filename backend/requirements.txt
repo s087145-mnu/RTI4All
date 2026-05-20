@@ -8,3 +8,6 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 pytest==8.3.2
 httpx==0.27.2
+# RAG pipeline: local sentence-transformers for embeddings + numpy for the index.
+sentence-transformers==2.7.0
+numpy==1.26.4

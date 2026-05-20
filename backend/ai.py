@@ -2,20 +2,27 @@
 AI answer step for the Ministry of Climate Change, Environment and Energy
 (Maldives) RTI portal.
 
-Calls Claude Haiku 4.5 with the server-side web_search + web_fetch tools.
-Allowed-domains list is restricted to two sources, queried in priority order
-by the model under explicit system-prompt instruction:
+Combines two grounding sources:
 
-    1. rtidhonbe.com         — the RTI vault (preferred source of truth)
-    2. environment.gov.mv    — the ministry's official site (fallback)
+    1. RAG over the ministry's local archive — past responded RTI requests +
+       FAQs. Retrieved items are injected into the system prompt as a
+       "Ministry archive" block.
+    2. Live web search and fetch via Claude's server-side tools, restricted
+       to rtidhonbe.com (preferred) and environment.gov.mv (fallback).
+
+The model gets ministry precedent (RAG) plus current facts (web) and is
+instructed to ground every claim in one of them.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from typing import Optional
 
 import anthropic
+
+from rag import RAGIndex, format_retrieved_for_prompt
 
 log = logging.getLogger(__name__)
 
@@ -23,28 +30,32 @@ _MODEL = "claude-haiku-4-5"
 _MAX_TOKENS = 2048
 _MAX_PAUSE_TURNS = 3
 
-_SYSTEM_PROMPT = (
+_SYSTEM_PROMPT_TEMPLATE = (
     "You are an AI assistant for the Maldives Ministry of Climate Change, "
     "Environment and Energy's citizen Right to Information (RTI) portal.\n\n"
-    "When a citizen submits an RTI request, your job is to look up authoritative "
-    "information from the official sources and draft a clear, factual response "
-    "addressed to the citizen.\n\n"
-    "SOURCE PRIORITY (strict ordering — do not skip step 1):\n"
-    "1. FIRST, search rtidhonbe.com using the web_search tool. This is the RTI "
-    "   vault and the preferred source. Use web_fetch to retrieve any promising "
-    "   document pages found in search results.\n"
-    "2. ONLY IF rtidhonbe.com does not contain the requested information, search "
-    "   environment.gov.mv — the ministry's official site — using the same tools.\n"
-    "3. If neither source contains the requested information, say so plainly and "
-    "   tell the citizen the next step (e.g. file a formal RTI application with "
-    "   the ministry's Information Officer).\n\n"
+    "When a citizen submits an RTI request, your job is to draft a clear, "
+    "factual response addressed to the citizen, grounded in two sources:\n\n"
+    "A. THE MINISTRY ARCHIVE — past responded RTI requests and standing FAQs, "
+    "   retrieved for you and shown below. These are authoritative precedent "
+    "   and process knowledge. PREFER them when they answer the question.\n\n"
+    "B. LIVE OFFICIAL SOURCES — accessible via the web_search and web_fetch "
+    "   tools, restricted to:\n"
+    "     1. rtidhonbe.com (the RTI vault) — search this FIRST.\n"
+    "     2. environment.gov.mv (the ministry site) — search this ONLY IF the "
+    "        vault does not have what is needed.\n\n"
+    "DECISION ORDER:\n"
+    "1. If the archive items below directly answer the question, draft from "
+    "   them and cite the prior RTI id (e.g. RTI-2024-0001) or FAQ id.\n"
+    "2. Otherwise use the web tools, vault first then the ministry site.\n"
+    "3. If neither has the answer, say so plainly and direct the citizen to "
+    "   file a formal RTI application with the Information Officer.\n\n"
+    "MINISTRY ARCHIVE:\n{archive_block}\n\n"
     "RULES:\n"
-    "- Every factual claim in your response must come from content you retrieved "
-    "  via web_search or web_fetch. Do not invent figures, names, dates, or "
-    "  document references.\n"
-    "- State which source you used (rtidhonbe.com vs environment.gov.mv). If you "
-    "  fell back to the ministry site, briefly note that the vault did not have "
-    "  the requested information.\n"
+    "- Every factual claim must come from the archive or from content you "
+    "  retrieved via web_search/web_fetch. Do not invent figures, names, "
+    "  dates, or document references.\n"
+    "- State which source(s) you used (archive precedent, FAQ, rtidhonbe.com, "
+    "  or environment.gov.mv).\n"
     "- Address the citizen directly. Be concise: 4-8 sentences, plain prose, "
     "  no markdown headings.\n\n"
     "OUTPUT FORMAT:\n"
@@ -79,10 +90,16 @@ _TOOLS = [
 ]
 
 
-def answer_request(*, subject: str, description: str) -> str:
+def answer_request(
+    *,
+    subject: str,
+    description: str,
+    rag_index: Optional[RAGIndex] = None,
+    rag_k: int = 4,
+) -> str:
     """
-    Generate a citizen-facing response, sourced live from the two configured
-    government websites. Raises RuntimeError on hard failures; returns a
+    Generate a citizen-facing response, grounded in the ministry archive (RAG)
+    and live web sources. Raises RuntimeError on hard failures; returns a
     clearly-labelled stub if ANTHROPIC_API_KEY is unset.
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -94,12 +111,21 @@ def answer_request(*, subject: str, description: str) -> str:
             "Energy has been received and is pending review."
         )
 
+    # RAG retrieval — pulls past responded RTIs + relevant FAQs as precedent.
+    archive_hits: list[dict] = []
+    if rag_index is not None:
+        query = f"{subject}\n{description}".strip()
+        archive_hits = rag_index.retrieve(query, k=rag_k)
+    system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
+        archive_block=format_retrieved_for_prompt(archive_hits)
+    )
+
     user_prompt = (
         f"Subject: {subject}\n"
         f"Description: {description}\n\n"
-        "Look up the requested information on rtidhonbe.com first; only fall "
-        "back to environment.gov.mv if the vault does not have it. Then draft "
-        "the response to the citizen."
+        "First check the ministry archive shown in your instructions. If the "
+        "archive does not answer the question, look up rtidhonbe.com (then "
+        "environment.gov.mv). Then draft the response to the citizen."
     )
 
     client = anthropic.Anthropic(api_key=api_key)
@@ -109,7 +135,7 @@ def answer_request(*, subject: str, description: str) -> str:
         message = client.messages.create(
             model=_MODEL,
             max_tokens=_MAX_TOKENS,
-            system=_SYSTEM_PROMPT,
+            system=system_prompt,
             tools=_TOOLS,
             messages=messages,
         )

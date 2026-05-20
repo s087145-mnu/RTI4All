@@ -6,6 +6,7 @@ Right to Information for All: helps citizens file and track RTI requests.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -13,6 +14,12 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
+
+from ai import answer_request
+from cache import QueryCache
+from data_source import SampleDataSource
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -39,13 +46,17 @@ app.add_middleware(
 DATA_FILE = Path(__file__).parent / "data" / "sample_data.json"
 
 _db: dict = {}
+_query_cache = QueryCache()
+_data_source: SampleDataSource | None = None
 
 
 @app.on_event("startup")
 def load_data() -> None:
     """Load all seed data from the JSON file into memory."""
+    global _data_source
     with open(DATA_FILE, encoding="utf-8") as fh:
         _db.update(json.load(fh))
+    _data_source = SampleDataSource(_db)
     print(
         f"[startup] Loaded {len(_db['requests'])} requests, "
         f"{len(_db['departments'])} departments, "
@@ -204,6 +215,14 @@ def create_request(payload: CreateRTIRequest):
     department_name = _get_department_name(payload.department_id)
 
     today = date.today().isoformat()
+
+    answer, status = _generate_answer(
+        department_id=payload.department_id,
+        department=department_name,
+        subject=payload.subject,
+        description=payload.description,
+    )
+
     new_request: dict = {
         "id": _next_request_id(),
         "citizen_name": payload.citizen_name,
@@ -212,14 +231,51 @@ def create_request(payload: CreateRTIRequest):
         "department": department_name,
         "subject": payload.subject,
         "description": payload.description,
-        "status": "Pending",
+        "status": status,
         "date_filed": today,
         "date_updated": today,
-        "response": None,
+        "response": answer,
     }
 
     _db["requests"].append(new_request)
     return new_request
+
+
+def _generate_answer(
+    *,
+    department_id: str,
+    department: str,
+    subject: str,
+    description: str,
+) -> tuple[Optional[str], str]:
+    """
+    Return (response_text, status) for a new RTI request.
+
+    Checks the in-memory cache first; on a miss, calls the AI step. If the
+    AI call fails for any reason, the request is filed as Pending with no
+    response so the citizen can still track it.
+    """
+    cache_key = QueryCache.make_key(department_id, subject, description)
+    cached = _query_cache.get(cache_key)
+    if cached is not None:
+        return cached, "Responded"
+
+    assert _data_source is not None, "DataSource not initialized at startup"
+
+    try:
+        answer = answer_request(
+            department=department,
+            subject=subject,
+            description=description,
+            data_source=_data_source,
+            department_id=department_id,
+        )
+    except Exception:
+        log.exception("AI answer step failed; filing request as Pending.")
+        return None, "Pending"
+
+    _query_cache.put(cache_key, answer)
+    return answer, "Responded"
 
 
 # ── Departments ──────────────────────────────────────────────────────────────

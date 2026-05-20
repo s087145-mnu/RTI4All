@@ -872,14 +872,22 @@ function NewRequestPage() {
       const res = await fetch("/api/requests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...form,
-          department_id: Number(form.department_id),
-        }),
+        body: JSON.stringify(form),
       });
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
-        throw new Error(errBody.detail || `HTTP ${res.status}`);
+        const detail = errBody.detail;
+        let msg;
+        if (Array.isArray(detail)) {
+          msg = detail
+            .map((d) => `${(d.loc ?? []).join(".")}: ${d.msg}`)
+            .join("; ");
+        } else if (typeof detail === "string") {
+          msg = detail;
+        } else {
+          msg = `HTTP ${res.status}`;
+        }
+        throw new Error(msg);
       }
       const created = await res.json();
       navigate(`/requests/${created.id}`);

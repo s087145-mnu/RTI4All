@@ -75,6 +75,10 @@ def load_data() -> None:
     populate_from_db(_rag_index, _db)
     # Build graph on cache miss; reuse persisted graph.json otherwise.
     _graph_state.build_or_load(_db)
+
+    # Create default users if they don't exist
+    _create_default_users()
+
     print(
         f"[startup] Loaded {len(_db['requests'])} requests, "
         f"{len(_db['departments'])} departments, "
@@ -82,6 +86,43 @@ def load_data() -> None:
         f"RAG index: {len(_rag_index)} items. "
         f"Graph: {len(_graph_state.retriever)} nodes."
     )
+
+
+def _create_default_users() -> None:
+    """Create default admin and citizen users for testing/demo purposes."""
+    from auth import create_user
+
+    # Default admin user
+    admin_email = "officer@gov.mv"
+    try:
+        create_user(
+            email=admin_email,
+            password="super-secret-pass",
+            full_name="Officer Hassan",
+            present_address="Ministry HQ, Male'",
+            phone_number="+960 3001000",
+            id_card=None,
+        )
+        print(f"[startup] Created default admin user: {admin_email}")
+    except Exception:
+        # User already exists
+        pass
+
+    # Default citizen user
+    citizen_email = "citizen@example.mv"
+    try:
+        create_user(
+            email=citizen_email,
+            password="another-pass",
+            full_name="Aishath Hassan",
+            present_address="H. Sunset, Hithadhoo, Addu City",
+            phone_number="+960 7777777",
+            id_card="A099887",
+        )
+        print(f"[startup] Created default citizen user: {citizen_email}")
+    except Exception:
+        # User already exists
+        pass
 
 
 # ---------------------------------------------------------------------------

@@ -30,7 +30,25 @@ Wait for both services to start:
 - Backend: http://localhost:8000
 - Frontend: http://localhost:5173
 
-## Creating Your First Admin Account
+## Default Test Users
+
+**The app automatically creates two users on startup - no signup needed!**
+
+### Admin User (Ready to Use)
+- **Email:** `officer@gov.mv`
+- **Password:** `super-secret-pass`
+- **Access:** Full admin panel at `/admin`
+
+### Citizen User (Ready to Use)
+- **Email:** `citizen@example.mv`
+- **Password:** `another-pass`
+- **Access:** File and track RTI requests
+
+👉 **Just login at http://localhost:5173/login with either account!**
+
+See [DEFAULT_USERS.md](./DEFAULT_USERS.md) for more details.
+
+## Creating Additional Users
 
 ### Option 1: Use the Default Admin Email
 

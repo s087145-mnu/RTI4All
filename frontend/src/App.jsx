@@ -1381,6 +1381,9 @@ function SignupPage() {
   const [form, setForm] = useState({
     full_name: "",
     email: "",
+    phone_number: "",
+    present_address: "",
+    id_card: "",
     password: "",
   });
   const [submitting, setSubmitting] = useState(false);
@@ -1394,7 +1397,11 @@ function SignupPage() {
     setSubmitting(true);
     setError(null);
     try {
-      await signup(form);
+      // Omit id_card from the payload when it's empty so the backend treats
+      // it as not-provided (rather than an empty-string opt-in).
+      const payload = { ...form };
+      if (!payload.id_card.trim()) delete payload.id_card;
+      await signup(payload);
       navigate(redirectTo, { replace: true });
     } catch (err) {
       setError(err.message);
@@ -1404,6 +1411,7 @@ function SignupPage() {
 
   const fieldStyle = { display: "flex", flexDirection: "column", gap: 6 };
   const labelStyle = { fontSize: "0.875rem", fontWeight: 600, color: TEXT };
+  const helperStyle = { fontSize: "0.75rem", color: MUTED };
 
   return (
     <AuthFormShell
@@ -1424,7 +1432,7 @@ function SignupPage() {
         style={{ display: "flex", flexDirection: "column", gap: 16 }}
       >
         <div style={fieldStyle}>
-          <label style={labelStyle}>Full Name</label>
+          <label style={labelStyle}>Name *</label>
           <input
             name="full_name"
             required
@@ -1434,8 +1442,9 @@ function SignupPage() {
             style={inputStyle()}
           />
         </div>
+
         <div style={fieldStyle}>
-          <label style={labelStyle}>Email</label>
+          <label style={labelStyle}>Email *</label>
           <input
             name="email"
             type="email"
@@ -1446,8 +1455,47 @@ function SignupPage() {
             style={inputStyle()}
           />
         </div>
+
         <div style={fieldStyle}>
-          <label style={labelStyle}>Password</label>
+          <label style={labelStyle}>Phone Number *</label>
+          <input
+            name="phone_number"
+            type="tel"
+            required
+            value={form.phone_number}
+            onChange={onChange}
+            placeholder="e.g. +960 7771234"
+            style={inputStyle()}
+          />
+        </div>
+
+        <div style={fieldStyle}>
+          <label style={labelStyle}>Present Address *</label>
+          <textarea
+            name="present_address"
+            required
+            rows={2}
+            value={form.present_address}
+            onChange={onChange}
+            placeholder="e.g. M. Anbara, Majeedhee Magu, Male'"
+            style={{ ...inputStyle(), resize: "vertical", lineHeight: 1.5 }}
+          />
+        </div>
+
+        <div style={fieldStyle}>
+          <label style={labelStyle}>ID Card</label>
+          <input
+            name="id_card"
+            value={form.id_card}
+            onChange={onChange}
+            placeholder="National ID number"
+            style={inputStyle()}
+          />
+          <span style={helperStyle}>Optional</span>
+        </div>
+
+        <div style={fieldStyle}>
+          <label style={labelStyle}>Password *</label>
           <input
             name="password"
             type="password"
@@ -1459,6 +1507,7 @@ function SignupPage() {
             style={inputStyle()}
           />
         </div>
+
         <button
           type="submit"
           disabled={submitting}

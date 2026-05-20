@@ -14,6 +14,9 @@ SIGNUP_PAYLOAD = {
     "email": "Alice@Example.MV",
     "password": "correct horse battery staple",
     "full_name": "Alice Tester",
+    "present_address": "M. Test House, Male'",
+    "phone_number": "+960 7771234",
+    "id_card": "A123456",
 }
 
 VALID_RTI_PAYLOAD = {
@@ -59,9 +62,37 @@ def test_signup_returns_token_and_normalized_user(client):
     body = response.json()
     assert body["token_type"] == "bearer"
     assert isinstance(body["access_token"], str) and len(body["access_token"]) > 20
-    # Emails are lowercased on storage.
-    assert body["user"]["email"] == "alice@example.mv"
-    assert body["user"]["full_name"] == "Alice Tester"
+    # Emails are lowercased on storage; the rest of the profile is echoed back.
+    user = body["user"]
+    assert user["email"] == "alice@example.mv"
+    assert user["full_name"] == "Alice Tester"
+    assert user["present_address"] == "M. Test House, Male'"
+    assert user["phone_number"] == "+960 7771234"
+    assert user["id_card"] == "A123456"
+
+
+def test_signup_rejects_missing_required_profile_field(client):
+    """present_address and phone_number are required."""
+    for missing in ("full_name", "present_address", "phone_number"):
+        payload = {k: v for k, v in SIGNUP_PAYLOAD.items() if k != missing}
+        # Re-key the email per attempt so duplicate-email rejection doesn't mask the test.
+        payload["email"] = f"missing-{missing}@example.mv"
+        response = client.post("/api/auth/signup", json=payload)
+        assert response.status_code == 422, f"missing {missing} should be rejected"
+
+
+def test_signup_accepts_missing_id_card(client):
+    """id_card is optional — omitting it must succeed."""
+    payload = {k: v for k, v in SIGNUP_PAYLOAD.items() if k != "id_card"}
+    response = client.post("/api/auth/signup", json=payload)
+    assert response.status_code == 201
+    assert response.json()["user"]["id_card"] is None
+
+
+def test_signup_rejects_whitespace_only_required_fields(client):
+    payload = {**SIGNUP_PAYLOAD, "present_address": "   "}
+    response = client.post("/api/auth/signup", json=payload)
+    assert response.status_code == 422
 
 
 def test_signup_duplicate_email_is_rejected(client):
@@ -176,6 +207,9 @@ def test_me_endpoint_returns_authenticated_user(client):
     assert response.json() == {
         "email": "alice@example.mv",
         "full_name": "Alice Tester",
+        "present_address": "M. Test House, Male'",
+        "phone_number": "+960 7771234",
+        "id_card": "A123456",
     }
 
 

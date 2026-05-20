@@ -180,6 +180,9 @@ def signup(payload: SignupRequest):
         email=payload.email,
         password=payload.password,
         full_name=payload.full_name,
+        present_address=payload.present_address,
+        phone_number=payload.phone_number,
+        id_card=payload.id_card,
     )
     token = create_access_token(user)
     return AuthResponse(access_token=token, user=user)

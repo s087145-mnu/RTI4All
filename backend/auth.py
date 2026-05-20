@@ -56,6 +56,9 @@ class SignupRequest(BaseModel):
     email: EmailStr
     password: str
     full_name: str
+    present_address: str
+    phone_number: str
+    id_card: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
@@ -66,6 +69,9 @@ class LoginRequest(BaseModel):
 class UserPublic(BaseModel):
     email: EmailStr
     full_name: str
+    present_address: str
+    phone_number: str
+    id_card: Optional[str] = None
 
 
 class AuthResponse(BaseModel):
@@ -82,6 +88,9 @@ class AuthResponse(BaseModel):
 class _UserRecord(BaseModel):
     email: EmailStr
     full_name: str
+    present_address: str
+    phone_number: str
+    id_card: Optional[str] = None
     password_hash: str
 
 
@@ -97,20 +106,51 @@ def reset_users() -> None:
     _users.clear()
 
 
-def create_user(*, email: str, password: str, full_name: str) -> UserPublic:
+def _to_public(record: _UserRecord) -> UserPublic:
+    return UserPublic(
+        email=record.email,
+        full_name=record.full_name,
+        present_address=record.present_address,
+        phone_number=record.phone_number,
+        id_card=record.id_card,
+    )
+
+
+def create_user(
+    *,
+    email: str,
+    password: str,
+    full_name: str,
+    present_address: str,
+    phone_number: str,
+    id_card: Optional[str] = None,
+) -> UserPublic:
     key = _normalize_email(email)
     if key in _users:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A user with this email already exists.",
         )
+    # Trim whitespace so empty fields ("   ") don't sneak past required validation.
+    full_name = full_name.strip()
+    present_address = present_address.strip()
+    phone_number = phone_number.strip()
+    id_card_clean = id_card.strip() if id_card else None
+    if not full_name or not present_address or not phone_number:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Name, present address, and phone number must not be empty.",
+        )
     record = _UserRecord(
         email=key,
-        full_name=full_name.strip(),
+        full_name=full_name,
+        present_address=present_address,
+        phone_number=phone_number,
+        id_card=id_card_clean or None,
         password_hash=_pwd_context.hash(password),
     )
     _users[key] = record
-    return UserPublic(email=record.email, full_name=record.full_name)
+    return _to_public(record)
 
 
 def authenticate_user(*, email: str, password: str) -> UserPublic:
@@ -123,7 +163,7 @@ def authenticate_user(*, email: str, password: str) -> UserPublic:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
         )
-    return UserPublic(email=record.email, full_name=record.full_name)
+    return _to_public(record)
 
 
 # ---------------------------------------------------------------------------
@@ -170,4 +210,4 @@ def get_current_user(token: str = Depends(_oauth2_scheme)) -> UserPublic:
         # with the in-memory store). Reject the token rather than silently
         # accept stale identities.
         raise _CREDENTIALS_EXC
-    return UserPublic(email=record.email, full_name=record.full_name)
+    return _to_public(record)

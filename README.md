@@ -33,7 +33,20 @@ When a citizen submits a request via `POST /api/requests`, the backend runs the 
 
 If the AI step fails (network, API error, etc.), the request is filed as `Pending` so the citizen can still track it. If `ANTHROPIC_API_KEY` is unset, the AI step returns a clearly-labelled stub.
 
-**Authentication.** Filing an RTI request requires being signed in. The portal exposes a small JWT auth flow: sign up with email + password, receive a bearer token, attach it to the `POST /api/requests` call. The citizen's name and email on the created record are taken from the JWT identity — they're not in the request payload, so a logged-in user can't file under someone else's name. Public reads (`GET /api/requests`, departments, FAQs, stats) remain open so anonymous browsing still works.
+**Authentication.** Filing an RTI request requires being signed in. The portal exposes a small JWT auth flow: sign up with a profile (see below), receive a bearer token, attach it to the `POST /api/requests` call. The citizen's name and email on the created record are taken from the JWT identity — they're not in the request payload, so a logged-in user can't file under someone else's name. Public reads (`GET /api/requests`, departments, FAQs, stats) remain open so anonymous browsing still works.
+
+**Signup profile.** The signup form collects:
+
+| Field | Required | Notes |
+|---|---|---|
+| Name (`full_name`) | ✅ | Used as the citizen name on filed RTI requests |
+| Email | ✅ | Used as the unique account identifier; normalized to lowercase |
+| Phone number | ✅ | Free-form string (e.g. `+960 7771234`) |
+| Present address | ✅ | Free-form string |
+| ID card | — | Optional national ID number |
+| Password | ✅ | Minimum 8 characters; bcrypt-hashed on the server |
+
+Whitespace-only values are rejected by the server. The full profile is returned on `/api/auth/me`.
 
 **Expected latency.** A cache miss takes roughly **15–30 seconds** end-to-end — the model runs several rounds of `web_search` and `web_fetch` against the two domains before drafting. A cache hit returns in **~15 ms**.
 
@@ -120,7 +133,7 @@ The backend test suite covers the JWT auth flow end-to-end. Run it inside the ba
 docker exec rti4all-backend python -m pytest tests/ -v
 ```
 
-The 12 tests cover: signup (success, duplicate-email rejection, invalid-email rejection), login (valid credentials, wrong password, unknown user), `POST /api/requests` protection (no token, malformed token, valid token), JWT identity override (the server overwrites any `citizen_name`/`email` an attacker tries to slip into the body), `GET /api/auth/me`, and that public reads remain open. The AI step is stubbed in the tests, so they don't burn an Anthropic API quota.
+The 15 tests cover: signup (success, duplicate-email rejection, invalid-email rejection, missing required profile fields, optional `id_card` omitted, whitespace-only required fields rejected), login (valid credentials, wrong password, unknown user), `POST /api/requests` protection (no token, malformed token, valid token), JWT identity override (the server overwrites any `citizen_name`/`email` an attacker tries to slip into the body), `GET /api/auth/me` returning the full profile, and that public reads remain open. The AI step is stubbed in the tests, so they don't burn an Anthropic API quota.
 
 ---
 

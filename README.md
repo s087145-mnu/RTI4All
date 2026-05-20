@@ -159,17 +159,31 @@ RTI4All/
 
 ### Configure environment
 
-Export these in your shell before `docker compose up`. Compose forwards them into the backend container automatically.
+1. Copy the example environment file:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-export JWT_SECRET_KEY=$(openssl rand -hex 32)        # any high-entropy secret
-export ADMIN_EMAILS=officer@gov.mv,supervisor@gov.mv # ministry officers
+cp .env.example .env
 ```
+
+2. Edit `.env` and configure the following variables:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...                         # Your Anthropic API key
+JWT_SECRET_KEY=$(openssl rand -hex 32)               # Any high-entropy secret
+ADMIN_EMAILS=officer@gov.mv,supervisor@gov.mv        # Ministry officers
+```
+
+**Important notes:**
 
 - `ANTHROPIC_API_KEY` unset → AI step returns a stub; everything else still works.
 - `JWT_SECRET_KEY` unset → backend logs a warning and uses an insecure dev fallback. **Never run that in production.**
 - `ADMIN_EMAILS` unset → no admins exist, so the admin panel is inaccessible. Matching is case-insensitive against the email used at signup, and is re-checked at login so adding emails after a user signed up retrofits them on next login.
+
+**Admin Setup:**
+When a user signs up with an email listed in `ADMIN_EMAILS` (e.g., `officer@gov.mv`), they will automatically:
+- Receive admin privileges (`is_admin: true`)
+- Be redirected to the admin panel (`/admin`) instead of the citizen request form
+- Have access to review, approve, edit, and reject RTI requests
 
 ### Run
 

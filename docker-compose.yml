@@ -10,11 +10,10 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+    env_file:
+      - .env
     environment:
       - PYTHONUNBUFFERED=1
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-}
-      - ADMIN_EMAILS=${ADMIN_EMAILS:-}
     restart: unless-stopped
 
   frontend:

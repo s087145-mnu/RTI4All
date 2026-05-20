@@ -13,7 +13,6 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-
 ADMIN_EMAIL = "officer@gov.mv"
 ADMIN_PASSWORD = "super-secret-pass"
 ADMIN_PROFILE = {
@@ -46,6 +45,7 @@ VALID_RTI_PAYLOAD = {
 def admin_setup(client, monkeypatch):
     """Configure ADMIN_EMAILS so ADMIN_EMAIL is recognised at signup."""
     import auth
+
     monkeypatch.setattr(auth, "_ADMIN_EMAILS", {ADMIN_EMAIL})
     return client
 
@@ -208,18 +208,121 @@ def test_admin_patch_with_empty_body_is_rejected(admin_setup):
 def test_admin_patch_rejects_invalid_status_value(admin_setup):
     admin_token = _signup(admin_setup, ADMIN_PROFILE)
     citizen_token = _signup(admin_setup, CITIZEN_PROFILE)
+
     filed = admin_setup.post(
         "/api/requests",
         json=VALID_RTI_PAYLOAD,
         headers=_bearer(citizen_token),
     ).json()
 
-    res = admin_setup.patch(
+    response = admin_setup.patch(
         f"/api/admin/requests/{filed['id']}",
-        json={"status": "Bogus"},
+        json={"status": "Junk Status Value"},
         headers=_bearer(admin_token),
     )
-    assert res.status_code == 400
+    assert response.status_code == 422
+
+
+def test_admin_can_see_all_requests_but_citizens_only_their_own(admin_setup):
+    """Admins can see all requests; regular users only their own."""
+    admin_token = _signup(admin_setup, ADMIN_PROFILE)
+    citizen1_token = _signup(admin_setup, CITIZEN_PROFILE)
+    citizen2_profile = {
+        "email": "another-citizen@example.mv",
+        "password": "pass123",
+        "full_name": "Mohamed Ali",
+        "present_address": "G. Morning Star, Male'",
+        "phone_number": "+960 9998888",
+    }
+    citizen2_token = _signup(admin_setup, citizen2_profile)
+
+    # Citizen 1 creates a request
+    req1 = admin_setup.post(
+        "/api/requests",
+        json=VALID_RTI_PAYLOAD,
+        headers=_bearer(citizen1_token),
+    ).json()
+
+    # Citizen 2 creates a request
+    req2 = admin_setup.post(
+        "/api/requests",
+        json={
+            "department_id": "moccee",
+            "subject": "Climate data",
+            "description": "Climate change data for 2024.",
+        },
+        headers=_bearer(citizen2_token),
+    ).json()
+
+    # Admin creates a request
+    req3 = admin_setup.post(
+        "/api/requests",
+        json={
+            "department_id": "moccee",
+            "subject": "Admin test request",
+            "description": "Testing admin access.",
+        },
+        headers=_bearer(admin_token),
+    ).json()
+
+    # Admin should see all 3 requests
+    admin_requests = admin_setup.get(
+        "/api/requests",
+        headers=_bearer(admin_token),
+    ).json()
+    assert len(admin_requests) == 3
+    request_ids = {r["id"] for r in admin_requests}
+    assert req1["id"] in request_ids
+    assert req2["id"] in request_ids
+    assert req3["id"] in request_ids
+
+    # Citizen 1 should only see their own request
+    citizen1_requests = admin_setup.get(
+        "/api/requests",
+        headers=_bearer(citizen1_token),
+    ).json()
+    assert len(citizen1_requests) == 1
+    assert citizen1_requests[0]["id"] == req1["id"]
+
+    # Citizen 2 should only see their own request
+    citizen2_requests = admin_setup.get(
+        "/api/requests",
+        headers=_bearer(citizen2_token),
+    ).json()
+    assert len(citizen2_requests) == 1
+    assert citizen2_requests[0]["id"] == req2["id"]
+
+    # Admin can access any specific request
+    assert (
+        admin_setup.get(
+            f"/api/requests/{req1['id']}", headers=_bearer(admin_token)
+        ).status_code
+        == 200
+    )
+    assert (
+        admin_setup.get(
+            f"/api/requests/{req2['id']}", headers=_bearer(admin_token)
+        ).status_code
+        == 200
+    )
+    assert (
+        admin_setup.get(
+            f"/api/requests/{req3['id']}", headers=_bearer(admin_token)
+        ).status_code
+        == 200
+    )
+
+    # Citizen 1 cannot access Citizen 2's request
+    resp = admin_setup.get(
+        f"/api/requests/{req2['id']}", headers=_bearer(citizen1_token)
+    )
+    assert resp.status_code == 403
+
+    # Citizen 2 cannot access Citizen 1's request
+    resp = admin_setup.get(
+        f"/api/requests/{req1['id']}", headers=_bearer(citizen2_token)
+    )
+    assert resp.status_code == 403
 
 
 def test_admin_patch_on_unknown_request_returns_404(admin_setup):

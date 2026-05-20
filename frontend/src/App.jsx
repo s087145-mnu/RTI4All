@@ -354,8 +354,8 @@ function Navbar() {
         <div style={{ display: "flex", gap: 24, alignItems: "center" }}>
           {[
             { to: "/", label: "Home" },
-            { to: "/requests", label: "Requests" },
-            { to: "/requests/new", label: "File RTI" },
+            ...(user ? [{ to: "/requests", label: "Requests" }] : []),
+            ...(user ? [{ to: "/requests/new", label: "File RTI" }] : []),
             { to: "/departments", label: "Departments" },
             { to: "/faqs", label: "FAQs" },
             ...(user?.is_admin ? [{ to: "/admin", label: "Admin" }] : []),
@@ -685,7 +685,7 @@ function HomePage() {
 
 // ─── RequestsPage ─────────────────────────────────────────────────────────────
 function RequestsPage() {
-  const { data: requests, loading, error } = useFetch("/api/requests");
+  const { data: requests, loading, error } = useAuthedFetch("/api/requests");
   const [statusFilter, setStatusFilter] = useState("all");
   const [search, setSearch] = useState("");
 
@@ -703,9 +703,9 @@ function RequestsPage() {
 
   return (
     <PageWrapper>
-      <PageTitle>RTI Requests</PageTitle>
+      <PageTitle>My RTI Requests</PageTitle>
       <Subtitle>
-        Browse and track all filed Right to Information requests.
+        Track your filed Right to Information requests and their status.
       </Subtitle>
 
       {/* Filters */}
@@ -765,7 +765,6 @@ function RequestsPage() {
                   >
                     {[
                       "ID",
-                      "Citizen",
                       "Department",
                       "Subject",
                       "Status",
@@ -810,7 +809,6 @@ function RequestsPage() {
                           #{req.id}
                         </Link>
                       </td>
-                      <td style={tdStyle}>{req.citizen_name}</td>
                       <td style={tdStyle}>{req.department}</td>
                       <td
                         style={{
@@ -864,7 +862,7 @@ function RequestsPage() {
 // ─── RequestDetailPage ────────────────────────────────────────────────────────
 function RequestDetailPage() {
   const { id } = useParams();
-  const { data: req, loading, error } = useFetch(`/api/requests/${id}`);
+  const { data: req, loading, error } = useAuthedFetch(`/api/requests/${id}`);
 
   return (
     <PageWrapper>
@@ -874,13 +872,13 @@ function RequestDetailPage() {
           color: MUTED,
           textDecoration: "none",
           fontSize: "0.875rem",
-          display: "inline-flex",
+          display: "flex",
           alignItems: "center",
-          gap: 4,
-          marginBottom: 20,
+          gap: 6,
+          marginBottom: 16,
         }}
       >
-        ← Back to Requests
+        ← Back to My Requests
       </Link>
 
       {loading && <Spinner />}
@@ -1353,10 +1351,15 @@ function LoginPage() {
   const { login, user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const redirectTo = location.state?.from ?? "/requests/new";
+  const defaultRedirect = user?.is_admin ? "/admin" : "/requests/new";
+  const redirectTo = location.state?.from ?? defaultRedirect;
 
   useEffect(() => {
-    if (user) navigate(redirectTo, { replace: true });
+    if (user) {
+      // Redirect admins to admin panel, regular users to new request page
+      const target = user.is_admin ? "/admin" : redirectTo;
+      navigate(target, { replace: true });
+    }
   }, [user, navigate, redirectTo]);
 
   const [form, setForm] = useState({ email: "", password: "" });
@@ -1371,8 +1374,10 @@ function LoginPage() {
     setSubmitting(true);
     setError(null);
     try {
-      await login(form);
-      navigate(redirectTo, { replace: true });
+      const loggedInUser = await login(form);
+      // Redirect admins to admin panel, regular users to new request page
+      const target = loggedInUser.is_admin ? "/admin" : redirectTo;
+      navigate(target, { replace: true });
     } catch (err) {
       setError(err.message);
       setSubmitting(false);
@@ -1443,10 +1448,13 @@ function LoginPage() {
 function SignupPage() {
   const { signup, user } = useAuth();
   const navigate = useNavigate();
-  const redirectTo = "/requests/new";
 
   useEffect(() => {
-    if (user) navigate(redirectTo, { replace: true });
+    if (user) {
+      // Redirect admins to admin panel, regular users to new request page
+      const redirectTo = user.is_admin ? "/admin" : "/requests/new";
+      navigate(redirectTo, { replace: true });
+    }
   }, [user, navigate]);
 
   const [form, setForm] = useState({
@@ -1472,7 +1480,9 @@ function SignupPage() {
       // it as not-provided (rather than an empty-string opt-in).
       const payload = { ...form };
       if (!payload.id_card.trim()) delete payload.id_card;
-      await signup(payload);
+      const newUser = await signup(payload);
+      // Redirect admins to admin panel, regular users to new request page
+      const redirectTo = newUser.is_admin ? "/admin" : "/requests/new";
       navigate(redirectTo, { replace: true });
     } catch (err) {
       setError(err.message);
@@ -2327,7 +2337,14 @@ export default function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<SignupPage />} />
-          <Route path="/requests" element={<RequestsPage />} />
+          <Route
+            path="/requests"
+            element={
+              <RequireAuth>
+                <RequestsPage />
+              </RequireAuth>
+            }
+          />
           <Route
             path="/requests/new"
             element={
@@ -2336,7 +2353,14 @@ export default function App() {
               </RequireAuth>
             }
           />
-          <Route path="/requests/:id" element={<RequestDetailPage />} />
+          <Route
+            path="/requests/:id"
+            element={
+              <RequireAuth>
+                <RequestDetailPage />
+              </RequireAuth>
+            }
+          />
           <Route path="/departments" element={<DepartmentsPage />} />
           <Route path="/faqs" element={<FaqsPage />} />
           <Route

@@ -9,7 +9,6 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-
 SIGNUP_PAYLOAD = {
     "email": "Alice@Example.MV",
     "password": "correct horse battery staple",
@@ -202,9 +201,91 @@ def test_me_endpoint_returns_authenticated_user(client):
 
 
 def test_public_endpoints_remain_open(client):
-    """GETs should not require auth — only POST /api/requests does."""
+    """Public endpoints should not require auth."""
     assert client.get("/api/health").status_code == 200
-    assert client.get("/api/requests").status_code == 200
     assert client.get("/api/departments").status_code == 200
     assert client.get("/api/faqs").status_code == 200
     assert client.get("/api/stats").status_code == 200
+
+
+def test_protected_endpoints_require_auth(client):
+    """GET /api/requests and GET /api/requests/:id now require authentication."""
+    assert client.get("/api/requests").status_code == 401
+    # Create a request first with auth to test detail endpoint
+    token = _signup_and_get_token(client, AISHATH_PROFILE)
+    resp = client.post(
+        "/api/requests",
+        json=VALID_RTI_PAYLOAD,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    request_id = resp.json()["id"]
+    # Now test without auth
+    assert client.get(f"/api/requests/{request_id}").status_code == 401
+
+
+def test_users_can_only_see_their_own_requests(client):
+    """Users should only see their own requests, not other users' requests."""
+    # Create two users
+    token1 = _signup_and_get_token(client, AISHATH_PROFILE)
+    token2_profile = {
+        "email": "mohamed@example.mv",
+        "password": "another-password",
+        "full_name": "Mohamed Ali",
+        "present_address": "G. Morning Star, Male'",
+        "phone_number": "+960 9998888",
+    }
+    token2 = _signup_and_get_token(client, token2_profile)
+
+    # User 1 creates a request
+    resp1 = client.post(
+        "/api/requests",
+        json=VALID_RTI_PAYLOAD,
+        headers={"Authorization": f"Bearer {token1}"},
+    )
+    request1_id = resp1.json()["id"]
+
+    # User 2 creates a request
+    resp2 = client.post(
+        "/api/requests",
+        json={
+            "department_id": "moccee",
+            "subject": "Climate adaptation programs",
+            "description": "Information about climate adaptation programs.",
+        },
+        headers={"Authorization": f"Bearer {token2}"},
+    )
+    request2_id = resp2.json()["id"]
+
+    # User 1 should only see their own request
+    user1_requests = client.get(
+        "/api/requests",
+        headers={"Authorization": f"Bearer {token1}"},
+    ).json()
+    assert len(user1_requests) == 1
+    assert user1_requests[0]["id"] == request1_id
+    assert user1_requests[0]["email"] == AISHATH_PROFILE["email"].lower()
+
+    # User 2 should only see their own request
+    user2_requests = client.get(
+        "/api/requests",
+        headers={"Authorization": f"Bearer {token2}"},
+    ).json()
+    assert len(user2_requests) == 1
+    assert user2_requests[0]["id"] == request2_id
+    assert user2_requests[0]["email"] == token2_profile["email"].lower()
+
+    # User 1 should not be able to access User 2's request
+    resp = client.get(
+        f"/api/requests/{request2_id}",
+        headers={"Authorization": f"Bearer {token1}"},
+    )
+    assert resp.status_code == 403
+    assert "permission" in resp.json()["detail"].lower()
+
+    # User 2 should not be able to access User 1's request
+    resp = client.get(
+        f"/api/requests/{request1_id}",
+        headers={"Authorization": f"Bearer {token2}"},
+    )
+    assert resp.status_code == 403
+    assert "permission" in resp.json()["detail"].lower()

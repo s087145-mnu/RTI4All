@@ -11,10 +11,6 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
 from ai import answer_request
 from auth import (
     AuthResponse,
@@ -28,7 +24,10 @@ from auth import (
     get_current_user,
 )
 from cache import QueryCache
+from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from graph import GraphState
+from pydantic import BaseModel
 from rag import (
     RAGIndex,
     SentenceTransformersEmbedder,
@@ -266,6 +265,7 @@ def me(current_user: UserPublic = Depends(get_current_user)):
 
 @app.get("/api/requests", response_model=list[PublicRTIRequest], tags=["RTI Requests"])
 def list_requests(
+    current_user: UserPublic = Depends(get_current_user),
     status: Optional[str] = Query(
         default=None,
         description="Filter by status: Pending | In Progress | Responded | Rejected",
@@ -276,10 +276,15 @@ def list_requests(
     ),
 ):
     """
-    Return all RTI requests.
+    Return RTI requests for the authenticated user.
+    Admins can see all requests; regular users only see their own.
     Optionally filter by **status** and/or **department_id**.
     """
     results = list(_db["requests"])
+
+    # Non-admin users can only see their own requests
+    if not current_user.is_admin:
+        results = [r for r in results if r["email"] == current_user.email]
 
     if status:
         normalised = status.strip().lower()
@@ -291,11 +296,25 @@ def list_requests(
     return results
 
 
-@app.get("/api/requests/{request_id}", response_model=PublicRTIRequest, tags=["RTI Requests"])
-def get_request(request_id: str):
-    """Return a single RTI request by its id."""
+@app.get(
+    "/api/requests/{request_id}", response_model=PublicRTIRequest, tags=["RTI Requests"]
+)
+def get_request(
+    request_id: str,
+    current_user: UserPublic = Depends(get_current_user),
+):
+    """
+    Return a single RTI request by its id.
+    Users can only access their own requests; admins can access all.
+    """
     for req in _db["requests"]:
         if req["id"] == request_id:
+            # Check authorization: admins can see all, users only their own
+            if not current_user.is_admin and req["email"] != current_user.email:
+                raise HTTPException(
+                    status_code=403,
+                    detail="You do not have permission to access this request.",
+                )
             return req
     raise HTTPException(
         status_code=404,
@@ -467,9 +486,7 @@ _ADMIN_EDITABLE_STATUSES = {"Under Review", "Responded", "Rejected", "Pending"}
 )
 def admin_list_pending(_: UserPublic = Depends(get_current_admin)):
     """Admin inbox: requests awaiting human review, oldest first."""
-    pending = [
-        r for r in _db["requests"] if r.get("status") == "Under Review"
-    ]
+    pending = [r for r in _db["requests"] if r.get("status") == "Under Review"]
     pending.sort(key=lambda r: (r.get("date_filed", ""), r.get("id", "")))
     return pending
 
@@ -519,7 +536,11 @@ def admin_update_request(
             detail=f"RTI request '{request_id}' not found.",
         )
 
-    if payload.response is None and payload.status is None and payload.rejection_reason is None:
+    if (
+        payload.response is None
+        and payload.status is None
+        and payload.rejection_reason is None
+    ):
         raise HTTPException(
             status_code=400,
             detail="At least one of response, status, or rejection_reason must be provided.",

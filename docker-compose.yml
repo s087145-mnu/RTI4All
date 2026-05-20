@@ -13,6 +13,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-}
     restart: unless-stopped
 
   frontend:

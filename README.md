@@ -13,8 +13,10 @@ A citizen-facing portal to file and track **Right to Information (RTI)** request
 | Frontend | React 18 + Vite (JavaScript) |
 | Backend | Python 3.11 + FastAPI |
 | AI | Anthropic Claude Haiku 4.5 with server-side `web_search` + `web_fetch` |
-| Data | In-memory sample JSON (no database) |
+| Auth | JWT (HS256) via `python-jose`, bcrypt password hashing via `passlib` |
+| Data | In-memory sample JSON + in-memory user store (no database) |
 | Container | Docker + Docker Compose |
+| Tests | pytest + FastAPI `TestClient` |
 
 ---
 
@@ -30,6 +32,8 @@ When a citizen submits a request via `POST /api/requests`, the backend runs the 
 4. **Storage.** The request is saved with `status: "Responded"` and the AI-generated answer in the `response` field. The (query → answer) pair is stored in the cache for future lookups with the same text.
 
 If the AI step fails (network, API error, etc.), the request is filed as `Pending` so the citizen can still track it. If `ANTHROPIC_API_KEY` is unset, the AI step returns a clearly-labelled stub.
+
+**Authentication.** Filing an RTI request requires being signed in. The portal exposes a small JWT auth flow: sign up with email + password, receive a bearer token, attach it to the `POST /api/requests` call. The citizen's name and email on the created record are taken from the JWT identity — they're not in the request payload, so a logged-in user can't file under someone else's name. Public reads (`GET /api/requests`, departments, FAQs, stats) remain open so anonymous browsing still works.
 
 **Expected latency.** A cache miss takes roughly **15–30 seconds** end-to-end — the model runs several rounds of `web_search` and `web_fetch` against the two domains before drafting. A cache hit returns in **~15 ms**.
 
@@ -53,9 +57,12 @@ RTI4All/
 │   ├── requirements.txt
 │   ├── main.py               # FastAPI application + routes
 │   ├── ai.py                 # Claude call with web_search / web_fetch
+│   ├── auth.py               # JWT + bcrypt + in-memory user store
 │   ├── cache.py              # In-memory normalized-text query cache
-│   └── data/
-│       └── sample_data.json  # One ministry + sample requests + FAQs
+│   ├── data/
+│   │   └── sample_data.json  # One ministry + sample requests + FAQs
+│   └── tests/
+│       └── test_auth.py      # Pytest coverage of the auth flow
 └── frontend/
     ├── Dockerfile
     ├── package.json
@@ -63,7 +70,7 @@ RTI4All/
     ├── index.html
     └── src/
         ├── main.jsx
-        └── App.jsx           # All pages, components, routing
+        └── App.jsx           # Pages + routing + AuthProvider / RequireAuth
 ```
 
 ---
@@ -75,13 +82,16 @@ RTI4All/
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
 - (Optional but recommended) An Anthropic API key with web-tools access — without one, the AI step falls back to a stub message
 
-### Configure the AI key
+### Configure the AI key and JWT secret
 
-Export the key in the shell before `docker compose up`. Compose passes it through to the backend container automatically.
+Export both before `docker compose up`. Compose passes them through to the backend container automatically.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
+export JWT_SECRET_KEY=$(openssl rand -hex 32)   # or any high-entropy secret
 ```
+
+If `JWT_SECRET_KEY` is unset, the backend logs a warning and falls back to an insecure dev-only value. Never run that fallback in production.
 
 ### Run with Docker Compose
 
@@ -102,20 +112,35 @@ docker compose up --build
 docker compose down
 ```
 
+### Run the test suite
+
+The backend test suite covers the JWT auth flow end-to-end. Run it inside the backend container:
+
+```bash
+docker exec rti4all-backend python -m pytest tests/ -v
+```
+
+The 12 tests cover: signup (success, duplicate-email rejection, invalid-email rejection), login (valid credentials, wrong password, unknown user), `POST /api/requests` protection (no token, malformed token, valid token), JWT identity override (the server overwrites any `citizen_name`/`email` an attacker tries to slip into the body), `GET /api/auth/me`, and that public reads remain open. The AI step is stubbed in the tests, so they don't burn an Anthropic API quota.
+
 ---
 
 ## API Endpoints
 
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/health` | Health check |
-| GET | `/api/requests` | List all RTI requests (filter by `status`, `department_id`) |
-| GET | `/api/requests/{id}` | Get a single RTI request |
-| POST | `/api/requests` | File a new RTI request — triggers cache lookup or live AI retrieval, returns the created record (typically `status: "Responded"`) |
-| GET | `/api/departments` | List departments (a single entry: the ministry) |
-| GET | `/api/departments/{id}` | Get a single department |
-| GET | `/api/faqs` | List all FAQs |
-| GET | `/api/stats` | Summary stats (totals by status) |
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/health` | — | Health check |
+| POST | `/api/auth/signup` | — | Create an account; returns `{access_token, user}` |
+| POST | `/api/auth/login` | — | Authenticate; returns `{access_token, user}` |
+| GET | `/api/auth/me` | **Bearer** | Return the currently signed-in user |
+| GET | `/api/requests` | — | List all RTI requests (filter by `status`, `department_id`) |
+| GET | `/api/requests/{id}` | — | Get a single RTI request |
+| POST | `/api/requests` | **Bearer** | File a new RTI request — triggers cache lookup or live AI retrieval. Citizen name and email are pulled from the JWT identity, not the request body |
+| GET | `/api/departments` | — | List departments (a single entry: the ministry) |
+| GET | `/api/departments/{id}` | — | Get a single department |
+| GET | `/api/faqs` | — | List all FAQs |
+| GET | `/api/stats` | — | Summary stats (totals by status) |
+
+Tokens are 24-hour HS256 JWTs. Send them as `Authorization: Bearer <token>` on the protected endpoints.
 
 ---
 

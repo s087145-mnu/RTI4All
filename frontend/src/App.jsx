@@ -1,10 +1,18 @@
-import { useState, useEffect } from "react";
+import {
+  useState,
+  useEffect,
+  createContext,
+  useContext,
+  useCallback,
+} from "react";
 import {
   BrowserRouter,
   Routes,
   Route,
   Link,
   NavLink,
+  Navigate,
+  useLocation,
   useNavigate,
   useParams,
 } from "react-router-dom";
@@ -41,6 +49,106 @@ function statusChip(status = "") {
     textTransform: "capitalize",
     ...style,
   };
+}
+
+// ─── Auth context ─────────────────────────────────────────────────────────────
+const AUTH_STORAGE_KEY = "rti4all-auth";
+
+const AuthContext = createContext({
+  user: null,
+  token: null,
+  login: async () => {},
+  signup: async () => {},
+  logout: () => {},
+});
+
+function useAuth() {
+  return useContext(AuthContext);
+}
+
+function extractErrorMessage(body, fallback) {
+  const detail = body?.detail;
+  if (Array.isArray(detail)) {
+    return detail.map((d) => `${(d.loc ?? []).join(".")}: ${d.msg}`).join("; ");
+  }
+  if (typeof detail === "string") return detail;
+  return fallback;
+}
+
+function AuthProvider({ children }) {
+  const [state, setState] = useState(() => {
+    try {
+      const stored = localStorage.getItem(AUTH_STORAGE_KEY);
+      return stored ? JSON.parse(stored) : { user: null, token: null };
+    } catch {
+      return { user: null, token: null };
+    }
+  });
+
+  const persist = useCallback((next) => {
+    setState(next);
+    if (next.token) {
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(next));
+    } else {
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+    }
+  }, []);
+
+  const post = async (path, body) => {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(extractErrorMessage(data, `HTTP ${res.status}`));
+    }
+    return data;
+  };
+
+  const login = useCallback(
+    async ({ email, password }) => {
+      const data = await post("/api/auth/login", { email, password });
+      persist({ user: data.user, token: data.access_token });
+      return data.user;
+    },
+    [persist],
+  );
+
+  const signup = useCallback(
+    async ({ email, password, full_name }) => {
+      const data = await post("/api/auth/signup", {
+        email,
+        password,
+        full_name,
+      });
+      persist({ user: data.user, token: data.access_token });
+      return data.user;
+    },
+    [persist],
+  );
+
+  const logout = useCallback(() => {
+    persist({ user: null, token: null });
+  }, [persist]);
+
+  return (
+    <AuthContext.Provider
+      value={{ user: state.user, token: state.token, login, signup, logout }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+function RequireAuth({ children }) {
+  const { user } = useAuth();
+  const location = useLocation();
+  if (!user) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
+  return children;
 }
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
@@ -153,6 +261,12 @@ function Subtitle({ children }) {
 
 // ─── Navbar ───────────────────────────────────────────────────────────────────
 function Navbar() {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const handleLogout = () => {
+    logout();
+    navigate("/");
+  };
   const linkStyle = (isActive) => ({
     color: isActive ? PRIMARY : TEXT,
     textDecoration: "none",
@@ -214,7 +328,7 @@ function Navbar() {
         </Link>
 
         {/* Nav links */}
-        <div style={{ display: "flex", gap: 28, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 24, alignItems: "center" }}>
           {[
             { to: "/", label: "Home" },
             { to: "/requests", label: "Requests" },
@@ -231,6 +345,74 @@ function Navbar() {
               {label}
             </NavLink>
           ))}
+
+          <div
+            style={{
+              height: 20,
+              width: 1,
+              background: BORDER,
+              margin: "0 4px",
+            }}
+          />
+
+          {user ? (
+            <>
+              <span
+                style={{
+                  color: MUTED,
+                  fontSize: "0.85rem",
+                  fontWeight: 500,
+                  maxWidth: 180,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={user.email}
+              >
+                {user.email}
+              </span>
+              <button
+                type="button"
+                onClick={handleLogout}
+                style={{
+                  background: "transparent",
+                  border: `1px solid ${BORDER}`,
+                  color: TEXT,
+                  fontSize: "0.85rem",
+                  fontWeight: 500,
+                  padding: "6px 14px",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                Log out
+              </button>
+            </>
+          ) : (
+            <>
+              <NavLink
+                to="/login"
+                style={({ isActive }) => linkStyle(isActive)}
+              >
+                Sign In
+              </NavLink>
+              <Link
+                to="/signup"
+                style={{
+                  background: PRIMARY,
+                  color: "#fff",
+                  fontSize: "0.85rem",
+                  fontWeight: 600,
+                  padding: "7px 14px",
+                  borderRadius: 6,
+                  textDecoration: "none",
+                }}
+              >
+                Sign Up
+              </Link>
+            </>
+          )}
         </div>
       </div>
     </nav>
@@ -850,11 +1032,10 @@ function DetailRow({ label, value }) {
 // ─── NewRequestPage ───────────────────────────────────────────────────────────
 function NewRequestPage() {
   const navigate = useNavigate();
+  const { token, user, logout } = useAuth();
   const { data: departments } = useFetch("/api/departments");
 
   const [form, setForm] = useState({
-    citizen_name: "",
-    email: "",
     department_id: "",
     subject: "",
     description: "",
@@ -881,23 +1062,24 @@ function NewRequestPage() {
     try {
       const res = await fetch("/api/requests", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify(form),
       });
       if (!res.ok) {
-        const errBody = await res.json().catch(() => ({}));
-        const detail = errBody.detail;
-        let msg;
-        if (Array.isArray(detail)) {
-          msg = detail
-            .map((d) => `${(d.loc ?? []).join(".")}: ${d.msg}`)
-            .join("; ");
-        } else if (typeof detail === "string") {
-          msg = detail;
-        } else {
-          msg = `HTTP ${res.status}`;
+        // Token expired or revoked — bounce back to login.
+        if (res.status === 401) {
+          logout();
+          navigate("/login", {
+            replace: true,
+            state: { from: "/requests/new" },
+          });
+          return;
         }
-        throw new Error(msg);
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(extractErrorMessage(errBody, `HTTP ${res.status}`));
       }
       const created = await res.json();
       navigate(`/requests/${created.id}`);
@@ -930,33 +1112,22 @@ function NewRequestPage() {
           >
             <div
               style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 16,
+                background: `${PRIMARY}10`,
+                border: `1px solid ${PRIMARY}33`,
+                borderRadius: 8,
+                padding: "12px 16px",
+                fontSize: "0.875rem",
+                color: TEXT,
               }}
             >
-              <div style={fieldStyle}>
-                <label style={labelStyle}>Full Name *</label>
-                <input
-                  name="citizen_name"
-                  required
-                  value={form.citizen_name}
-                  onChange={handleChange}
-                  placeholder="e.g. Priya Sharma"
-                  style={inputStyle()}
-                />
+              <div style={{ color: MUTED, fontSize: "0.75rem", marginBottom: 2 }}>
+                Filing as
               </div>
-              <div style={fieldStyle}>
-                <label style={labelStyle}>Email Address *</label>
-                <input
-                  name="email"
-                  type="email"
-                  required
-                  value={form.email}
-                  onChange={handleChange}
-                  placeholder="e.g. priya@email.com"
-                  style={inputStyle()}
-                />
+              <div style={{ fontWeight: 600 }}>
+                {user?.full_name}{" "}
+                <span style={{ color: MUTED, fontWeight: 400 }}>
+                  · {user?.email}
+                </span>
               </div>
             </div>
 
@@ -1081,6 +1252,227 @@ function NewRequestPage() {
         </Card>
       </div>
     </PageWrapper>
+  );
+}
+
+// ─── Auth pages ──────────────────────────────────────────────────────────────
+function AuthFormShell({ title, subtitle, children, footer }) {
+  return (
+    <PageWrapper>
+      <div style={{ maxWidth: 440, margin: "32px auto" }}>
+        <PageTitle>{title}</PageTitle>
+        <Subtitle>{subtitle}</Subtitle>
+        <Card>{children}</Card>
+        <div
+          style={{
+            textAlign: "center",
+            color: MUTED,
+            fontSize: "0.875rem",
+            marginTop: 20,
+          }}
+        >
+          {footer}
+        </div>
+      </div>
+    </PageWrapper>
+  );
+}
+
+function LoginPage() {
+  const { login, user } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const redirectTo = location.state?.from ?? "/requests/new";
+
+  useEffect(() => {
+    if (user) navigate(redirectTo, { replace: true });
+  }, [user, navigate, redirectTo]);
+
+  const [form, setForm] = useState({ email: "", password: "" });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  const onChange = (e) =>
+    setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
+
+  const onSubmit = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await login(form);
+      navigate(redirectTo, { replace: true });
+    } catch (err) {
+      setError(err.message);
+      setSubmitting(false);
+    }
+  };
+
+  const fieldStyle = { display: "flex", flexDirection: "column", gap: 6 };
+  const labelStyle = { fontSize: "0.875rem", fontWeight: 600, color: TEXT };
+
+  return (
+    <AuthFormShell
+      title="Sign In"
+      subtitle="Access your account to file new RTI requests."
+      footer={
+        <>
+          Don't have an account?{" "}
+          <Link to="/signup" style={{ color: PRIMARY, fontWeight: 600 }}>
+            Create one
+          </Link>
+        </>
+      }
+    >
+      {error && <ErrorBanner message={error} />}
+      <form
+        onSubmit={onSubmit}
+        style={{ display: "flex", flexDirection: "column", gap: 16 }}
+      >
+        <div style={fieldStyle}>
+          <label style={labelStyle}>Email</label>
+          <input
+            name="email"
+            type="email"
+            required
+            value={form.email}
+            onChange={onChange}
+            placeholder="you@example.mv"
+            style={inputStyle()}
+          />
+        </div>
+        <div style={fieldStyle}>
+          <label style={labelStyle}>Password</label>
+          <input
+            name="password"
+            type="password"
+            required
+            value={form.password}
+            onChange={onChange}
+            style={inputStyle()}
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={submitting}
+          style={{
+            ...btnStyle(PRIMARY),
+            opacity: submitting ? 0.7 : 1,
+            cursor: submitting ? "not-allowed" : "pointer",
+            marginTop: 4,
+          }}
+        >
+          {submitting ? "Signing in…" : "Sign In"}
+        </button>
+      </form>
+    </AuthFormShell>
+  );
+}
+
+function SignupPage() {
+  const { signup, user } = useAuth();
+  const navigate = useNavigate();
+  const redirectTo = "/requests/new";
+
+  useEffect(() => {
+    if (user) navigate(redirectTo, { replace: true });
+  }, [user, navigate]);
+
+  const [form, setForm] = useState({
+    full_name: "",
+    email: "",
+    password: "",
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  const onChange = (e) =>
+    setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
+
+  const onSubmit = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await signup(form);
+      navigate(redirectTo, { replace: true });
+    } catch (err) {
+      setError(err.message);
+      setSubmitting(false);
+    }
+  };
+
+  const fieldStyle = { display: "flex", flexDirection: "column", gap: 6 };
+  const labelStyle = { fontSize: "0.875rem", fontWeight: 600, color: TEXT };
+
+  return (
+    <AuthFormShell
+      title="Create Account"
+      subtitle="Sign up to file RTI requests with the ministry."
+      footer={
+        <>
+          Already have an account?{" "}
+          <Link to="/login" style={{ color: PRIMARY, fontWeight: 600 }}>
+            Sign in
+          </Link>
+        </>
+      }
+    >
+      {error && <ErrorBanner message={error} />}
+      <form
+        onSubmit={onSubmit}
+        style={{ display: "flex", flexDirection: "column", gap: 16 }}
+      >
+        <div style={fieldStyle}>
+          <label style={labelStyle}>Full Name</label>
+          <input
+            name="full_name"
+            required
+            value={form.full_name}
+            onChange={onChange}
+            placeholder="e.g. Aishath Hassan"
+            style={inputStyle()}
+          />
+        </div>
+        <div style={fieldStyle}>
+          <label style={labelStyle}>Email</label>
+          <input
+            name="email"
+            type="email"
+            required
+            value={form.email}
+            onChange={onChange}
+            placeholder="you@example.mv"
+            style={inputStyle()}
+          />
+        </div>
+        <div style={fieldStyle}>
+          <label style={labelStyle}>Password</label>
+          <input
+            name="password"
+            type="password"
+            required
+            minLength={8}
+            value={form.password}
+            onChange={onChange}
+            placeholder="Minimum 8 characters"
+            style={inputStyle()}
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={submitting}
+          style={{
+            ...btnStyle(PRIMARY),
+            opacity: submitting ? 0.7 : 1,
+            cursor: submitting ? "not-allowed" : "pointer",
+            marginTop: 4,
+          }}
+        >
+          {submitting ? "Creating account…" : "Create Account"}
+        </button>
+      </form>
+    </AuthFormShell>
   );
 }
 
@@ -1407,30 +1799,41 @@ function Footer() {
 // ─── App (root) ───────────────────────────────────────────────────────────────
 export default function App() {
   return (
-    <BrowserRouter>
-      {/* Global keyframe for spinner */}
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: ${BG}; color: ${TEXT}; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        a:focus-visible, button:focus-visible { outline: 2px solid ${PRIMARY}; outline-offset: 2px; }
-        input:focus, select:focus, textarea:focus { border-color: ${PRIMARY} !important; box-shadow: 0 0 0 3px ${PRIMARY}22; }
-      `}</style>
+    <AuthProvider>
+      <BrowserRouter>
+        {/* Global keyframe for spinner */}
+        <style>{`
+          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+          *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+          body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: ${BG}; color: ${TEXT}; }
+          @keyframes spin { to { transform: rotate(360deg); } }
+          a:focus-visible, button:focus-visible { outline: 2px solid ${PRIMARY}; outline-offset: 2px; }
+          input:focus, select:focus, textarea:focus { border-color: ${PRIMARY} !important; box-shadow: 0 0 0 3px ${PRIMARY}22; }
+        `}</style>
 
-      <Navbar />
+        <Navbar />
 
-      <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/requests" element={<RequestsPage />} />
-        <Route path="/requests/new" element={<NewRequestPage />} />
-        <Route path="/requests/:id" element={<RequestDetailPage />} />
-        <Route path="/departments" element={<DepartmentsPage />} />
-        <Route path="/faqs" element={<FaqsPage />} />
-        <Route path="*" element={<NotFoundPage />} />
-      </Routes>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/signup" element={<SignupPage />} />
+          <Route path="/requests" element={<RequestsPage />} />
+          <Route
+            path="/requests/new"
+            element={
+              <RequireAuth>
+                <NewRequestPage />
+              </RequireAuth>
+            }
+          />
+          <Route path="/requests/:id" element={<RequestDetailPage />} />
+          <Route path="/departments" element={<DepartmentsPage />} />
+          <Route path="/faqs" element={<FaqsPage />} />
+          <Route path="*" element={<NotFoundPage />} />
+        </Routes>
 
-      <Footer />
-    </BrowserRouter>
+        <Footer />
+      </BrowserRouter>
+    </AuthProvider>
   );
 }

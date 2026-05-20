@@ -11,11 +11,21 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 
 from ai import answer_request
+from auth import (
+    AuthResponse,
+    LoginRequest,
+    SignupRequest,
+    UserPublic,
+    authenticate_user,
+    create_access_token,
+    create_user,
+    get_current_user,
+)
 from cache import QueryCache
 
 log = logging.getLogger(__name__)
@@ -87,10 +97,13 @@ class RTIRequest(BaseModel):
 
 
 class CreateRTIRequest(BaseModel):
-    """Payload accepted by POST /api/requests."""
+    """Payload accepted by POST /api/requests.
 
-    citizen_name: str
-    email: EmailStr
+    citizen_name and email are NOT in this payload — they come from the
+    authenticated user's JWT identity, so a logged-in user cannot file under
+    someone else's name.
+    """
+
     department_id: str
     subject: str
     description: str
@@ -152,6 +165,40 @@ def health_check():
     return {"status": "ok"}
 
 
+# ── Authentication ──────────────────────────────────────────────────────────
+
+
+@app.post(
+    "/api/auth/signup",
+    response_model=AuthResponse,
+    status_code=201,
+    tags=["Auth"],
+)
+def signup(payload: SignupRequest):
+    """Create a new user account and return an access token."""
+    user = create_user(
+        email=payload.email,
+        password=payload.password,
+        full_name=payload.full_name,
+    )
+    token = create_access_token(user)
+    return AuthResponse(access_token=token, user=user)
+
+
+@app.post("/api/auth/login", response_model=AuthResponse, tags=["Auth"])
+def login(payload: LoginRequest):
+    """Authenticate an existing user and return an access token."""
+    user = authenticate_user(email=payload.email, password=payload.password)
+    token = create_access_token(user)
+    return AuthResponse(access_token=token, user=user)
+
+
+@app.get("/api/auth/me", response_model=UserPublic, tags=["Auth"])
+def me(current_user: UserPublic = Depends(get_current_user)):
+    """Return the currently authenticated user."""
+    return current_user
+
+
 # ── Requests ────────────────────────────────────────────────────────────────
 
 
@@ -197,22 +244,21 @@ def get_request(request_id: str):
 @app.post(
     "/api/requests", response_model=RTIRequest, status_code=201, tags=["RTI Requests"]
 )
-def create_request(payload: CreateRTIRequest):
+def create_request(
+    payload: CreateRTIRequest,
+    current_user: UserPublic = Depends(get_current_user),
+):
     """
-    Submit a new RTI request.
+    Submit a new RTI request. Requires a valid bearer token.
 
-    The **department_id** must correspond to a known department.
-    The new request is automatically assigned:
-    - a sequential id
-    - status `"Pending"`
-    - `date_filed` and `date_updated` set to today
-    - `response` set to `null`
+    The citizen's name and email are taken from the authenticated user — the
+    payload only carries the actual RTI content (department, subject, description).
     """
     department_name = _get_department_name(payload.department_id)
 
     today = date.today().isoformat()
 
-    answer, status = _generate_answer(
+    answer, request_status = _generate_answer(
         department_id=payload.department_id,
         subject=payload.subject,
         description=payload.description,
@@ -220,13 +266,13 @@ def create_request(payload: CreateRTIRequest):
 
     new_request: dict = {
         "id": _next_request_id(),
-        "citizen_name": payload.citizen_name,
-        "email": payload.email,
+        "citizen_name": current_user.full_name,
+        "email": current_user.email,
         "department_id": payload.department_id,
         "department": department_name,
         "subject": payload.subject,
         "description": payload.description,
-        "status": status,
+        "status": request_status,
         "date_filed": today,
         "date_updated": today,
         "response": answer,

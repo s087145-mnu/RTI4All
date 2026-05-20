@@ -28,6 +28,7 @@ from auth import (
     get_current_user,
 )
 from cache import QueryCache
+from graph import GraphState
 from rag import (
     RAGIndex,
     SentenceTransformersEmbedder,
@@ -64,19 +65,23 @@ DATA_FILE = Path(__file__).parent / "data" / "sample_data.json"
 _db: dict = {}
 _query_cache = QueryCache()
 _rag_index = RAGIndex(SentenceTransformersEmbedder())
+_graph_state = GraphState()
 
 
 @app.on_event("startup")
 def load_data() -> None:
-    """Load all seed data from the JSON file and build the RAG index."""
+    """Load seed data, build the vector index, and build/load the graph."""
     with open(DATA_FILE, encoding="utf-8") as fh:
         _db.update(json.load(fh))
     populate_from_db(_rag_index, _db)
+    # Build graph on cache miss; reuse persisted graph.json otherwise.
+    _graph_state.build_or_load(_db)
     print(
         f"[startup] Loaded {len(_db['requests'])} requests, "
         f"{len(_db['departments'])} departments, "
         f"{len(_db['faqs'])} FAQs. "
-        f"RAG index: {len(_rag_index)} items."
+        f"RAG index: {len(_rag_index)} items. "
+        f"Graph: {len(_graph_state.retriever)} nodes."
     )
 
 
@@ -375,6 +380,7 @@ def _generate_answer(
             subject=subject,
             description=description,
             rag_index=_rag_index,
+            graph_retriever=_graph_state.retriever,
         )
     except Exception:
         log.exception("AI answer step failed; filing request as Pending.")
@@ -541,8 +547,14 @@ def admin_update_request(
     target["reviewed_by"] = admin.email
     target["reviewed_at"] = today
 
-    # Feedback loop: approved responses become precedent for future RAG retrievals.
+    # Feedback loop: approved responses become precedent for both retrievers.
     if target.get("status") == "Responded":
         index_responded_request(_rag_index, target)
+        # graphify caches per-file extractions, so only the new markdown file
+        # pays an LLM call here.
+        try:
+            _graph_state.update_for_request(target)
+        except Exception:
+            log.exception("graph update_for_request failed (non-fatal).")
 
     return target

@@ -48,15 +48,31 @@ class BagOfWordsEmbedder:
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
     import main
     import auth
     import rag
+    import graph
 
     # Replace the global RAG index with a stub-embedded one. Done BEFORE the
     # TestClient context manager so startup populates the stub index.
     stub_index = rag.RAGIndex(BagOfWordsEmbedder())
     monkeypatch.setattr(main, "_rag_index", stub_index)
+
+    # Replace the graphify subprocess invocation with a no-op stub that writes
+    # an empty graph.json. Tests can override the contents via fixtures that
+    # set a richer graph in tmp_path/rag_cache/corpus/graphify-out/graph.json.
+    def stub_extract(corpus_dir, *, backend="claude", timeout=300):
+        gout = corpus_dir / "graphify-out"
+        gout.mkdir(parents=True, exist_ok=True)
+        graph_path = gout / "graph.json"
+        if not graph_path.exists():
+            graph_path.write_text('{"nodes": [], "edges": []}')
+        return graph_path
+
+    monkeypatch.setattr(graph, "run_graphify_extract", stub_extract)
+    # Per-test graph state pointed at a tmp dir — tests stay isolated.
+    monkeypatch.setattr(main, "_graph_state", graph.GraphState(cache_dir=tmp_path / "rag_cache"))
 
     auth.reset_users()
     main._query_cache._store.clear()

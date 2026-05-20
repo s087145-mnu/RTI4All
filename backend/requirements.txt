@@ -11,3 +11,6 @@ httpx==0.27.2
 # RAG pipeline: local sentence-transformers for embeddings + numpy for the index.
 sentence-transformers==2.7.0
 numpy==1.26.4
+# graphify: knowledge-graph layer over the corpus. CLI tool — invoked via
+# subprocess from backend/graph.py. https://github.com/safishamsi/graphify
+graphifyy==0.8.13

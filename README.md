@@ -13,7 +13,7 @@ A citizen-facing portal + ministry admin panel for filing and reviewing **Right 
 | Frontend | React 18 + Vite (JavaScript) |
 | Backend | Python 3.11 + FastAPI |
 | AI | Anthropic Claude Haiku 4.5 with server-side `web_search` + `web_fetch` |
-| RAG | `sentence-transformers` (`all-MiniLM-L6-v2`), in-memory numpy cosine index |
+| RAG | Two-layer: vector (`sentence-transformers` + numpy cosine) + knowledge graph ([graphify](https://github.com/safishamsi/graphify)) |
 | Auth | JWT (HS256) via `python-jose`, bcrypt password hashing via `passlib` |
 | Data | In-memory sample JSON + in-memory user store (no database) |
 | Container | Docker + Docker Compose |
@@ -47,15 +47,30 @@ The AI is instructed never to invent figures, names, dates, or document referenc
 
 ### The RAG pipeline
 
-A small, dependency-light RAG layer grounds drafts in the ministry's own archive before any web retrieval happens:
+Two complementary retrieval layers feed the system prompt. Both ground drafts in the ministry's own archive before the LLM looks at any live web source.
+
+**Layer 1 — Vector RAG (semantic similarity)**
 
 - **Corpus**: built at startup from `data/sample_data.json`. Each **responded** RTI request becomes one chunk (`subject + description + official response`); each FAQ becomes one chunk (`question + answer`). Pending / Under Review / Rejected requests are excluded — only items that survived officer approval are treated as precedent.
-- **Embedding model**: `sentence-transformers/all-MiniLM-L6-v2` (≈90 MB, CPU-only). The model is pre-downloaded into the Docker image so containers start without a first-request stall. No external embedding API is used.
-- **Index**: a single in-memory `numpy.float32` matrix of L2-normalized vectors. Retrieval is plain dot-product cosine over the whole matrix. Plenty fast at the scale of "all of one ministry's RTI history".
-- **Retrieval-into-prompt**: the top-4 hits are formatted as a `MINISTRY ARCHIVE:` block and embedded directly into the system prompt. Each entry shows the source kind (request / FAQ), id, and content so the model can cite it.
-- **Feedback loop**: when an officer **approves** a request, `index_responded_request(...)` adds the (possibly edited) final response to the index. Future similar questions retrieve it as precedent. Rejected requests are **not** indexed.
+- **Embedding model**: `sentence-transformers/all-MiniLM-L6-v2` (≈90 MB, CPU-only), pre-downloaded into the Docker image. No external embedding API used.
+- **Index**: single in-memory `numpy.float32` matrix of L2-normalized vectors. Plain dot-product cosine retrieval over the whole matrix.
+- **Retrieval**: top-4 hits formatted as `MINISTRY ARCHIVE — VECTOR MATCHES:` in the system prompt.
+- **Feedback loop**: when an officer **approves** a request, `index_responded_request(...)` adds the (possibly edited) final response to the index for future retrievals.
 
 Swapping the embedder is a one-line change — `RAGIndex` takes any object that implements `embed(texts: list[str]) -> np.ndarray` (L2-normalized). Tests use a deterministic `BagOfWordsEmbedder` so they don't load PyTorch.
+
+**Layer 2 — Knowledge graph via graphify**
+
+A graph-augmented layer that finds precedent through *shared entities* — useful when a new request mentions the same project, atoll, or programme as a past one, even if the vector embeddings don't quite line up.
+
+- **Builder**: [`graphify`](https://github.com/safishamsi/graphify) (PyPI `graphifyy`). Each chunk is exported as a markdown file; `graphify extract --backend claude` runs an LLM-driven entity-and-relationship extraction over the corpus and produces `graph.json` (nodes = entities, edges = relations like `references`, `located_in`, `mentions`).
+- **Persistence — the compute-savings story**: `graph.json` is written to `backend/.rag_cache/corpus/graphify-out/` and reused on restart. The LLM extraction cost is paid **once per piece of content**, never per query and never per restart. A typical seed corpus (≈10 chunks) costs ≈ \$0.15 to extract initially; subsequent cache hits are free. Per-file extraction cache (`graphify-out/cache/`) means re-running `graphify extract` on the same corpus skips unchanged files.
+- **Retriever**: `GraphRetriever` loads `graph.json` in-process. For a query, it tokenises against node `label`s, takes top label-matched seed nodes, does 1-hop edge traversal, then groups reached nodes by `source_file` to rank chunks. **No subprocess at query time**.
+- **Retrieval**: top-3 hits (deduped against the vector hits by id) formatted as `MINISTRY ARCHIVE — GRAPH-LINKED PRECEDENT:` in the system prompt.
+- **Feedback loop**: when an officer approves a request, the new markdown file is written to the corpus dir and `graphify extract` is invoked again. Graphify's per-file cache means only the new file pays the LLM cost — typically a single chunk, ≈ \$0.01.
+- **First-run cost** on the seed corpus: ≈ \$0.15 in Anthropic tokens, observed in CI; subsequent container starts are free thanks to the cache.
+
+Tests stub the `graphify extract` subprocess so the suite runs fast (≈8 s for 46 tests) and never burns LLM tokens. The `GraphRetriever` itself is unit-tested against fixture `graph.json` files.
 
 ### The admin (human-in-the-loop) review
 
@@ -113,14 +128,16 @@ RTI4All/
 │   ├── ai.py                 # Claude call: RAG retrieval + web_search/web_fetch
 │   ├── auth.py               # JWT + bcrypt + admin bootstrap + user store
 │   ├── cache.py              # In-memory normalized-text query cache
-│   ├── rag.py                # Embedder + numpy cosine index + DB-population helpers
+│   ├── rag.py                # Vector index — embedder + numpy cosine + DB helpers
+│   ├── graph.py              # graphify integration — corpus export, subprocess, GraphRetriever
 │   ├── data/
 │   │   └── sample_data.json  # The ministry + seed requests + FAQs
 │   └── tests/
-│       ├── conftest.py       # Shared fixture: stubbed AI, BagOfWords embedder
+│       ├── conftest.py       # Shared fixture: stubbed AI, BagOfWords embedder, stubbed graphify
 │       ├── test_auth.py      # Auth flow coverage (15 tests)
 │       ├── test_admin.py     # Admin workflow coverage (12 tests)
-│       └── test_rag.py       # RAG pipeline coverage (10 tests)
+│       ├── test_rag.py       # Vector RAG coverage (10 tests)
+│       └── test_graph.py     # graphify retriever coverage (9 tests)
 └── frontend/
     ├── Dockerfile
     ├── package.json
@@ -174,11 +191,12 @@ Stop with `docker compose down`.
 docker exec rti4all-backend python -m pytest tests/ -v
 ```
 
-**37 tests, AI step stubbed + sentence-transformers stubbed** (no Anthropic quota burned, no model load):
+**46 tests, all external work stubbed** (no Anthropic quota burned, no model load, no graphify subprocess):
 
 - **`test_auth.py` — 15 tests.** Signup success / duplicate-email / invalid-email / missing required profile field / optional `id_card` omitted / whitespace-only rejected; login with valid / wrong-password / unknown-email; `POST /api/requests` protection (no token / malformed / valid); JWT identity override (server discards attacker-supplied `citizen_name` / `email`); `/auth/me` returns full profile; public reads remain open.
 - **`test_admin.py` — 12 tests.** `ADMIN_EMAILS` bootstraps `is_admin` at signup, non-admin emails aren't promoted, flag surfaces on `/auth/me`; admin endpoints reject unauthenticated and non-admin tokens; new requests land in `Under Review` with profile snapshotted; inbox lists pending; admin can edit + approve (stamps reviewer + timestamp); admin can reject with reason; empty PATCH and invalid status rejected; PATCH on unknown ID → 404.
 - **`test_rag.py` — 10 tests.** Stubbed `BagOfWordsEmbedder` is deterministic, normalized, and ranks similar texts higher than unrelated ones; `RAGIndex.upsert` / `retrieve` returns top-k by cosine; upsert replaces by id; empty / blank queries are handled; `populate_from_db` loads only responded requests + all FAQs; startup seeds the index; admin **approval** adds the request (and a marker phrase becomes retrievable); admin **rejection** does not add to the index.
+- **`test_graph.py` — 9 tests.** `export_corpus` writes one markdown per responded RTI and per FAQ; `export_single_request` rejects non-responded items; `GraphRetriever` finds documents by label match, traverses 1-hop edges to neighbour-linked source files, returns empty when no labels match, and handles a missing `graph.json` gracefully; startup creates the graph state via the stubbed subprocess; admin **approval** invokes `run_graphify_extract` and writes a new corpus file; admin **rejection** does **not** invoke it.
 
 ---
 
@@ -228,7 +246,8 @@ Send tokens as `Authorization: Bearer <token>`. **Admin** rows additionally requ
 ## Limitations
 
 - **Cache is exact-match.** Paraphrased queries don't dedupe — *"plastic ban enforcement 2024"* and *"single-use plastic enforcement actions in 2024"* will each call the AI. (The RAG layer **does** match paraphrases, but only for retrieving precedent; it doesn't short-circuit the LLM call.)
-- **RAG corpus is small.** With one ministry's mock data, the archive starts at 10 chunks (3 responded RTIs + 7 FAQs) and grows by one per officer approval. Retrieval quality scales with the corpus — for production, seed the index with real ministry RTI history and longer policy documents.
+- **RAG corpus is small.** With one ministry's mock data, the archive starts at 10 chunks (3 responded RTIs + 7 FAQs) and grows by one per officer approval. Retrieval quality scales with the corpus — for production, seed both layers with real ministry RTI history and longer policy documents.
+- **graphify first-build cost.** The first container start with an empty `.rag_cache/` runs `graphify extract` on the seed corpus — ≈ \$0.15 in Anthropic tokens and ≈ 20–30 s of wall time. Every subsequent start (or container restart with the cache volume preserved) is free. Per-approval updates pay for ≈ 1 file each (~\$0.01).
 - **Two sources only.** The model is hard-walled to `rtidhonbe.com` and `environment.gov.mv`. If neither has the information, the response directs the citizen to file a formal RTI application.
 - **Latency on cache miss** is dominated by real web round-trips (15–30 s typical, longer for complex queries).
 - **Restart wipes state.** Users, filed requests, and the query cache all live in process memory — no database, no disk persistence. Re-bootstrap by signing up again.

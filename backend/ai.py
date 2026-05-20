@@ -22,6 +22,7 @@ from typing import Optional
 
 import anthropic
 
+from graph import GraphRetriever, format_graph_hits_for_prompt
 from rag import RAGIndex, format_retrieved_for_prompt
 
 log = logging.getLogger(__name__)
@@ -36,8 +37,12 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "When a citizen submits an RTI request, your job is to draft a clear, "
     "factual response addressed to the citizen, grounded in two sources:\n\n"
     "A. THE MINISTRY ARCHIVE — past responded RTI requests and standing FAQs, "
-    "   retrieved for you and shown below. These are authoritative precedent "
-    "   and process knowledge. PREFER them when they answer the question.\n\n"
+    "   retrieved for you two ways and shown below:\n"
+    "     - Vector matches: items semantically similar to the question.\n"
+    "     - Graph-linked items: items that share extracted entities (people, "
+    "       projects, atolls, programmes, policies) with the question.\n"
+    "   These are authoritative precedent and process knowledge. PREFER them "
+    "   when they answer the question.\n\n"
     "B. LIVE OFFICIAL SOURCES — accessible via the web_search and web_fetch "
     "   tools, restricted to:\n"
     "     1. rtidhonbe.com (the RTI vault) — search this FIRST.\n"
@@ -49,7 +54,8 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "2. Otherwise use the web tools, vault first then the ministry site.\n"
     "3. If neither has the answer, say so plainly and direct the citizen to "
     "   file a formal RTI application with the Information Officer.\n\n"
-    "MINISTRY ARCHIVE:\n{archive_block}\n\n"
+    "MINISTRY ARCHIVE — VECTOR MATCHES:\n{vector_block}\n\n"
+    "MINISTRY ARCHIVE — GRAPH-LINKED PRECEDENT:\n{graph_block}\n\n"
     "RULES:\n"
     "- Every factual claim must come from the archive or from content you "
     "  retrieved via web_search/web_fetch. Do not invent figures, names, "
@@ -95,12 +101,15 @@ def answer_request(
     subject: str,
     description: str,
     rag_index: Optional[RAGIndex] = None,
+    graph_retriever: Optional[GraphRetriever] = None,
     rag_k: int = 4,
+    graph_k: int = 3,
 ) -> str:
     """
-    Generate a citizen-facing response, grounded in the ministry archive (RAG)
-    and live web sources. Raises RuntimeError on hard failures; returns a
-    clearly-labelled stub if ANTHROPIC_API_KEY is unset.
+    Generate a citizen-facing response, grounded in the ministry archive
+    (vector RAG + graphify entity graph) and live web sources. Raises
+    RuntimeError on hard failures; returns a clearly-labelled stub if
+    ANTHROPIC_API_KEY is unset.
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -111,13 +120,26 @@ def answer_request(
             "Energy has been received and is pending review."
         )
 
-    # RAG retrieval — pulls past responded RTIs + relevant FAQs as precedent.
-    archive_hits: list[dict] = []
-    if rag_index is not None:
-        query = f"{subject}\n{description}".strip()
-        archive_hits = rag_index.retrieve(query, k=rag_k)
+    query = f"{subject}\n{description}".strip()
+
+    # Vector retrieval (semantic similarity).
+    vector_hits: list[dict] = (
+        rag_index.retrieve(query, k=rag_k) if rag_index is not None else []
+    )
+
+    # Graph retrieval (shared-entity traversal). Dedupe against vector hits by
+    # request/FAQ id to keep the prompt compact.
+    graph_hits_raw: list[dict] = (
+        graph_retriever.retrieve(query, k=graph_k + rag_k)
+        if graph_retriever is not None
+        else []
+    )
+    seen_ids = {h.get("id") for h in vector_hits}
+    graph_hits = [h for h in graph_hits_raw if h.get("id") not in seen_ids][:graph_k]
+
     system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
-        archive_block=format_retrieved_for_prompt(archive_hits)
+        vector_block=format_retrieved_for_prompt(vector_hits),
+        graph_block=format_graph_hits_for_prompt(graph_hits),
     )
 
     user_prompt = (

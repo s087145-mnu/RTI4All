@@ -31,6 +31,16 @@ When a citizen submits a request via `POST /api/requests`, the backend runs the 
 
 If the AI step fails (network, API error, etc.), the request is filed as `Pending` so the citizen can still track it. If `ANTHROPIC_API_KEY` is unset, the AI step returns a clearly-labelled stub.
 
+**Expected latency.** A cache miss takes roughly **15–30 seconds** end-to-end — the model runs several rounds of `web_search` and `web_fetch` against the two domains before drafting. A cache hit returns in **~15 ms**.
+
+### Example response shape
+
+A real request for *"current installed renewable energy capacity and national targets"* returns content like:
+
+> Based on the Ministry's published Energy Policy and Strategy 2024–2029, the Maldives has an installed electricity capacity of 600 MW, of which 68.5 MW comes from solar PV (~6% of national consumption). At COP28 the government committed to sourcing 33% of national electricity from renewables by 2028. The RTI vault did not have this information; it was retrieved from environment.gov.mv.
+
+Where neither source has the answer, the model says so plainly and directs the citizen to file a formal RTI application with the ministry's Information Officer.
+
 ---
 
 ## Project Structure
@@ -112,7 +122,14 @@ docker compose down
 ## Notes
 
 - All state is **in-memory** — restarting the backend resets any newly filed requests *and* the query cache to the seed data.
-- The query cache uses **exact normalized match** (lowercase, stripped punctuation, collapsed whitespace) on the request text. Identical re-submissions reuse the prior answer instantly; paraphrased queries are treated as new and incur a fresh AI lookup.
 - The AI is strictly instructed to **try rtidhonbe.com first** and only fall back to `environment.gov.mv` if the vault doesn't contain the requested information. It is told not to invent figures, names, dates, or document references — if neither source has the answer, it says so and points the citizen at the next step.
-- Web search and web fetch are server-side Anthropic tools and are billed separately from input/output tokens. Both are restricted via `allowed_domains` to the two configured sites.
+- Web search and web fetch are server-side Anthropic tools and are billed separately from input/output tokens. Both are restricted to the two configured sites via `allowed_domains`. On Haiku 4.5 they run in `allowed_callers=["direct"]` mode (the model doesn't support the dynamic-filtering / programmatic-tool-calling default).
+- Only the text emitted **after the last tool-use block** is returned to the citizen — intermediate planning text the model produces between search rounds is filtered out.
 - The Vite dev server proxies all `/api/*` requests to the backend container, so no CORS issues in the browser.
+
+### Limitations
+
+- **Cache is exact-match.** Lowercase + punctuation-stripped + whitespace-collapsed on `(department_id, subject + description)`. Paraphrases (*"plastic ban enforcement 2024"* vs *"single-use plastic enforcement actions in 2024"*) don't dedupe — each will hit the AI fresh.
+- **Two sources only.** The model cannot reach anything outside `rtidhonbe.com` and `environment.gov.mv`. If neither has the information, the citizen is directed to the formal RTI application process.
+- **Latency on cache miss** is dominated by web round-trips (15–30 s typical, longer for complex queries).
+- **Restart wipes state.** Newly filed requests and the query cache live in process memory — no database, no disk persistence.

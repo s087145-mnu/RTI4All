@@ -1,0 +1,6 @@
+/rti4all
+/backend-go
+*.test
+*.out
+.env
+data/backups/

@@ -1,19 +1,16 @@
-version: "3.9"
-
 services:
   backend:
     build:
-      context: ./backend
+      context: ./backend-go
       dockerfile: Dockerfile
     container_name: rti4all-backend
     ports:
       - "8000:8000"
-    volumes:
-      - ./backend:/app
     env_file:
       - .env
     environment:
-      - PYTHONUNBUFFERED=1
+      - PORT=8000
+      - DATA_FILE=/app/data/sample_data.json
     restart: unless-stopped
 
   frontend:

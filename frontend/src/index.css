@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+ * Global base — minimalist, neutral palette, restrained typography.
+ *
+ * Body: ink-50 background, ink-900 text. All page chrome lives on the ink
+ * scale; the only saturated colour is the `accent` blue used sparingly for
+ * primary CTAs, focus rings, and the brand mark.
+ * ------------------------------------------------------------------------- */
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-ink-50 text-ink-900 antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  *::selection {
+    @apply bg-accent-100 text-accent-900;
+  }
+
+  /* Focus rings: subtle blue glow, no outline. */
+  *:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgb(59 130 246 / 0.18);
+    border-radius: 6px;
+  }
+
+  /* Scrollbars: thin, neutral. Webkit + Firefox. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #d4d4d8 transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: #d4d4d8;
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: #a1a1aa;
+    background-clip: content-box;
+    border: 2px solid transparent;
+  }
+
+  /* Small caps for table headers and meta-labels. */
+  .label {
+    @apply text-xs font-medium uppercase tracking-[0.08em] text-ink-500;
+  }
+}
+
+@layer components {
+  /* Spinner used by <Spinner /> — defined here so consumers can apply
+   * arbitrary sizes via Tailwind without keyframes living in JS. */
+  .spinner {
+    @apply inline-block animate-spin rounded-full border-2 border-ink-200 border-t-accent-600;
+  }
+}

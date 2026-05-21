@@ -55,13 +55,24 @@ RTI4All/
 ├── .env                      # ANTHROPIC_API_KEY, JWT_SECRET_KEY, ADMIN_EMAILS
 ├── end2end.md                # ← this file
 │
-├── frontend/                 # React SPA (Vite dev server)
+├── frontend/                 # React SPA — TypeScript + Tailwind, Vite dev server
 │   ├── Dockerfile            # node:20-alpine → npm run dev
-│   ├── vite.config.js        # proxies /api → backend:8000
+│   ├── vite.config.ts        # proxies /api → backend:8000, @ → src
+│   ├── tailwind.config.js    # custom palette (ink-* grayscale + accent-* blue)
+│   ├── tsconfig.json
 │   ├── package.json
 │   └── src/
-│       ├── main.jsx
-│       └── App.jsx           # all routes + screens in one file (~2400 lines)
+│       ├── main.tsx          # entry: mounts <App /> + tailwind base
+│       ├── App.tsx           # router declaration
+│       ├── index.css         # tailwind base + scrollbar/focus polish
+│       ├── api/client.ts     # typed fetch wrapper around the /api/* surface
+│       ├── components/       # ui kit (Card, Button, StatusBadge, ...) + Layout
+│       ├── context/          # AuthContext (token + user, persisted)
+│       ├── lib/              # cn(), useAsync(), date formatting
+│       ├── pages/            # one file per top-level route (Home, Requests, ...)
+│       │   └── admin/        # AdminInboxPage, AdminReviewPage
+│       └── types/api.ts      # wire-level types mirroring the Go backend
+
 │
 ├── backend-go/               # Go backend (the one we ship)
 │   ├── main.go               # entrypoint: load data, build indexes, start HTTP

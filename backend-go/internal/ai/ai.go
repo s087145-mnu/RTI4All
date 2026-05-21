@@ -154,13 +154,19 @@ MINISTRY ARCHIVE — VECTOR MATCHES:
 MINISTRY ARCHIVE — GRAPH-LINKED PRECEDENT:
 %s
 
+OFFICIAL SOURCES THE CITIZEN MAY ALSO CONSULT:
+- rtidhonbe.com — the public Maldives RTI vault (decisions, precedents, published responses).
+- environment.gov.mv — the Ministry of Climate Change, Environment and Energy's official site (policies, reports, press releases).
+
 RULES:
 - Every factual claim must come from the archive shown above. Do not invent figures, names, dates, or document references.
 - Cite the relevant prior RTI id (e.g. RTI-2024-0001) or FAQ id when you draw on it.
 - Address the citizen directly. Be concise: 4-8 sentences, plain prose, no markdown headings.
+- If your answer can be backed up by a public document on rtidhonbe.com or environment.gov.mv, end the reply with a short "Useful resources:" block listing 1-3 plain URLs (one per line). Only include this block when the resources are clearly relevant; otherwise omit it.
+- Do NOT fabricate deep links to specific PDFs you have not actually retrieved — link the section landing pages instead, e.g. https://rtidhonbe.com or https://environment.gov.mv .
 
 OUTPUT FORMAT:
-Your reply will be shown to the citizen verbatim. Do NOT include any preamble or signoff like "Response to Citizen:", "Dear Citizen,", or "Best regards". Output ONLY the body of the response, in plain prose, starting with the substantive answer.`
+Your reply will be shown to the citizen verbatim. Do NOT include any preamble or signoff like "Response to Citizen:", "Dear Citizen,", or "Best regards". Output ONLY the body of the response, in plain prose, starting with the substantive answer. If you add a "Useful resources:" block, put it on its own paragraph at the end.`
 
 // AnswerRequest drafts a citizen-facing response to a new RTI request.
 //

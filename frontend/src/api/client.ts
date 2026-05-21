@@ -14,6 +14,7 @@ import type {
   Department,
   FAQ,
   LoginPayload,
+  PublicFeedItem,
   PublicRequest,
   SignupPayload,
   Stats,
@@ -116,6 +117,8 @@ export const api = {
   department: (id: string) => request<Department>(`/departments/${id}`),
   faqs: () => request<FAQ[]>("/faqs"),
   stats: () => request<Stats>("/stats"),
+  publicFeed: (limit = 5) =>
+    request<PublicFeedItem[]>("/public/requests", { query: { limit: String(limit) } }),
 
   // Citizen requests
   listMyRequests: (

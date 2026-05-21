@@ -17,6 +17,8 @@ import {
   Textarea,
 } from "@/components/ui";
 import { useAsync } from "@/lib/useAsync";
+import { cn } from "@/lib/cn";
+import type { Visibility } from "@/types/api";
 
 export function NewRequestPage() {
   const navigate = useNavigate();
@@ -27,6 +29,7 @@ export function NewRequestPage() {
     department_id: "",
     subject: "",
     description: "",
+    visibility: "public" as Visibility,
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -131,10 +134,75 @@ export function NewRequestPage() {
               />
             </Field>
 
+            {/* Visibility selector — two big radio cards.
+              * Public requests appear on the public homepage feed once
+              * responded; anonymous requests never do. Both are reviewed by
+              * the same officer the same way. */}
+            <div>
+              <span className="mb-1.5 block text-xs font-medium text-ink-700">
+                Visibility <span className="ml-0.5 text-accent-600">*</span>
+              </span>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {(
+                  [
+                    {
+                      key: "public" as Visibility,
+                      title: "Public",
+                      desc: "Once responded, this question and the official reply may appear on the homepage feed.",
+                      icon: "🌐",
+                    },
+                    {
+                      key: "anonymous" as Visibility,
+                      title: "Anonymous",
+                      desc: "Only you and the reviewing officer ever see this request. It will not appear publicly.",
+                      icon: "🔒",
+                    },
+                  ] as const
+                ).map((opt) => {
+                  const active = form.visibility === opt.key;
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() =>
+                        setForm({ ...form, visibility: opt.key })
+                      }
+                      className={cn(
+                        "rounded-lg border px-4 py-3 text-left transition-colors",
+                        active
+                          ? "border-accent-500 bg-accent-50/60 ring-1 ring-accent-200"
+                          : "border-ink-200 bg-white hover:border-ink-300 hover:bg-ink-50",
+                      )}
+                    >
+                      <div className="flex items-center gap-2 text-sm font-medium text-ink-900">
+                        <span aria-hidden>{opt.icon}</span>
+                        {opt.title}
+                        {active ? (
+                          <span className="ml-auto text-[10px] uppercase tracking-wider text-accent-700">
+                            Selected
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 text-xs leading-relaxed text-ink-500">
+                        {opt.desc}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             <div className="rounded-lg border border-accent-100 bg-accent-50 px-4 py-3 text-xs leading-relaxed text-accent-800">
               By submitting, you acknowledge that this request will be reviewed
               by the ministry's Information Officer. The response will be
               published to your dashboard once approved.
+              {form.visibility === "anonymous" ? (
+                <>
+                  {" "}You've chosen <span className="font-semibold">Anonymous</span>{" "}
+                  — your name and email are still shared with the reviewing
+                  officer, but the request will never appear on the public feed.
+                </>
+              ) : null}
             </div>
 
             <div className="flex items-center justify-end gap-3">

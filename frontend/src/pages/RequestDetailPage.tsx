@@ -18,7 +18,89 @@ import { useAsync } from "@/lib/useAsync";
 import { formatDate } from "@/lib/format";
 import type { ClarificationRequest, PublicRequest } from "@/types/api";
 
+/**
+ * Render the AI response, hoisting any "Useful resources:" trailing block
+ * into a styled list of clickable links. The Drafter is instructed to add
+ * such a block when relevant; if not, just render the text as-is.
+ */
+function ResponseBody({ text }: { text: string }) {
+  // Split into "main body" + optional "Useful resources" tail. Case-insensitive
+  // match on the literal label so the model has a stable contract to follow.
+  const re = /\buseful resources:?/i;
+  const match = text.match(re);
+  if (!match || match.index === undefined) {
+    return (
+      <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-800">
+        {text}
+      </p>
+    );
+  }
+  const body = text.slice(0, match.index).trimEnd();
+  const tail = text.slice(match.index + match[0].length).trim();
+  // Pick out URL-looking tokens (one per line or comma-separated).
+  const urls = Array.from(
+    tail.matchAll(/\bhttps?:\/\/[^\s,)\]]+/g),
+    (m) => m[0],
+  );
+  return (
+    <>
+      <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-800">
+        {body}
+      </p>
+      {urls.length > 0 ? (
+        <div className="mt-4 rounded-lg border border-ink-200 bg-ink-50/60 px-4 py-3">
+          <div className="text-[11px] uppercase tracking-wider text-ink-500">
+            Useful resources
+          </div>
+          <ul className="mt-2 space-y-1 text-sm">
+            {urls.map((u, i) => (
+              <li key={i}>
+                <a
+                  href={u}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-accent-700 underline-offset-2 hover:text-accent-800 hover:underline"
+                >
+                  {u}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function VisibilityBadge({ value }: { value?: string }) {
+  const isAnon = value === "anonymous";
+  return (
+    <span
+      className={
+        isAnon
+          ? "inline-flex items-center gap-1.5 rounded-full border border-ink-300 bg-ink-100 px-2 py-0.5 text-[11px] font-medium text-ink-700"
+          : "inline-flex items-center gap-1.5 rounded-full border border-accent-200 bg-accent-50 px-2 py-0.5 text-[11px] font-medium text-accent-700"
+      }
+      title={
+        isAnon
+          ? "This request is anonymous. It will never appear on the public feed."
+          : "This request is public. Once responded it may appear on the homepage feed."
+      }
+    >
+      <span
+        className={
+          isAnon
+            ? "h-1.5 w-1.5 rounded-full bg-ink-500"
+            : "h-1.5 w-1.5 rounded-full bg-accent-500"
+        }
+      />
+      {isAnon ? "Anonymous" : "Public"}
+    </span>
+  );
+}
+
 function MetaRow({ label, value }: { label: string; value: React.ReactNode }) {
+
   return (
     <div className="flex items-baseline justify-between gap-4 border-b border-ink-100 py-2.5 last:border-b-0">
       <span className="text-xs font-medium text-ink-500">{label}</span>
@@ -249,7 +331,10 @@ export function RequestDetailPage() {
             {req.department} · filed {formatDate(req.date_filed)}
           </p>
         </div>
-        <StatusBadge status={req.status} size="md" />
+        <div className="flex items-center gap-2">
+          <VisibilityBadge value={req.visibility} />
+          <StatusBadge status={req.status} size="md" />
+        </div>
       </div>
 
       <div className="mt-8 grid gap-6 md:grid-cols-[1fr_280px]">
@@ -283,9 +368,7 @@ export function RequestDetailPage() {
                 description={`Reviewed and published by the ministry on ${formatDate(req.date_updated)}.`}
               />
               <CardBody>
-                <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-800">
-                  {req.response}
-                </p>
+                <ResponseBody text={req.response} />
               </CardBody>
             </Card>
           ) : null}
@@ -297,9 +380,7 @@ export function RequestDetailPage() {
                 description="Pending officer approval — this is not yet the official reply."
               />
               <CardBody>
-                <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-700">
-                  {req.response}
-                </p>
+                <ResponseBody text={req.response} />
               </CardBody>
             </Card>
           ) : null}
@@ -334,6 +415,10 @@ export function RequestDetailPage() {
             <CardHeader title="Details" />
             <CardBody className="py-2">
               <MetaRow label="Status" value={<StatusBadge status={req.status} />} />
+              <MetaRow
+                label="Visibility"
+                value={<VisibilityBadge value={req.visibility} />}
+              />
               <MetaRow label="Filed" value={formatDate(req.date_filed)} />
               <MetaRow label="Last updated" value={formatDate(req.date_updated)} />
               <MetaRow label="Department" value={req.department} />

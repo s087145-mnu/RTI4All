@@ -72,6 +72,8 @@ func (s *Server) Routes() http.Handler {
 
 	// Stats (public — same as Python)
 	r.Get("/api/stats", s.getStats)
+	// Public feed — anonymous responded requests are excluded.
+	r.Get("/api/public/requests", s.listPublicRequests)
 
 	// Citizen request routes
 	r.With(s.Auth.RequireAuth).Get("/api/requests", s.listRequests)
@@ -287,6 +289,64 @@ type createRequestPayload struct {
 	DepartmentID string `json:"department_id"`
 	Subject      string `json:"subject"`
 	Description  string `json:"description"`
+	// Visibility is "public" (default) or "anonymous". Anonymous requests are
+	// hidden from the public homepage feed even after they're responded to.
+	Visibility string `json:"visibility"`
+}
+
+// listPublicRequests returns the most recent N responded RTI requests whose
+// visibility is "public" (or unset, treated as public). Used by the homepage
+// hero to show a real, anonymised feed of resolved cases.
+func (s *Server) listPublicRequests(w http.ResponseWriter, r *http.Request) {
+	limit := 5
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 50 {
+			limit = n
+		}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Collect responded + public, newest first by date_updated.
+	candidates := make([]*models.RTIRequest, 0)
+	for _, req := range s.DB.Requests {
+		if req.Status != "Responded" || req.IsAnonymous() {
+			continue
+		}
+		candidates = append(candidates, req)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].DateUpdated != candidates[j].DateUpdated {
+			return candidates[i].DateUpdated > candidates[j].DateUpdated
+		}
+		return candidates[i].ID > candidates[j].ID
+	})
+	if limit > len(candidates) {
+		limit = len(candidates)
+	}
+
+	// Shape a minimal payload — we deliberately omit `citizen_name` and
+	// `email` here so the public feed never doxxes filers, even on "public"
+	// requests.
+	type publicListing struct {
+		ID          string `json:"id"`
+		Subject     string `json:"subject"`
+		Department  string `json:"department"`
+		DateUpdated string `json:"date_updated"`
+		Response    string `json:"response"`
+	}
+	out := make([]publicListing, 0, limit)
+	for _, req := range candidates[:limit] {
+		out = append(out, publicListing{
+			ID:          req.ID,
+			Subject:     req.Subject,
+			Department:  req.Department,
+			DateUpdated: req.DateUpdated,
+			Response:    req.Response,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) createRequest(w http.ResponseWriter, r *http.Request) {
@@ -328,6 +388,11 @@ func (s *Server) createRequest(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[handlers] request needs officer review (completeness below 0.7)")
 	}
 
+	visibility := strings.ToLower(strings.TrimSpace(p.Visibility))
+	if visibility != "anonymous" {
+		visibility = "public"
+	}
+
 	newReq := &models.RTIRequest{
 		ID:                   s.nextRequestID(),
 		CitizenName:          user.FullName,
@@ -343,6 +408,7 @@ func (s *Server) createRequest(w http.ResponseWriter, r *http.Request) {
 		DateFiled:            today,
 		DateUpdated:          today,
 		Response:             answer,
+		Visibility:           visibility,
 		ProcessedData:        processed,
 		ClarificationHistory: []map[string]any{},
 		CitizenUpdates:       []map[string]any{},

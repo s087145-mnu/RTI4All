@@ -88,6 +88,8 @@ export interface CitizenUpdateEntry {
 }
 
 /** Citizen-facing projection of an RTI request (no profile snapshot, no audit). */
+export type Visibility = "public" | "anonymous";
+
 export interface PublicRequest {
   id: string;
   citizen_name: string;
@@ -101,10 +103,20 @@ export interface PublicRequest {
   date_updated: string;
   response?: string;
   rejection_reason?: string;
+  visibility?: Visibility;
   processed_data?: ProcessedData;
   clarification_requested?: ClarificationRequest;
   clarification_history?: ClarificationHistoryEntry[];
   citizen_updates?: CitizenUpdateEntry[];
+}
+
+/** Minimal payload returned by /api/public/requests for the homepage feed. */
+export interface PublicFeedItem {
+  id: string;
+  subject: string;
+  department: string;
+  date_updated: string;
+  response: string;
 }
 
 /** Admin view — adds the citizen profile snapshot + review audit. */
@@ -120,6 +132,7 @@ export interface CreateRequestPayload {
   department_id: string;
   subject: string;
   description: string;
+  visibility?: Visibility;
 }
 
 export interface AdminUpdatePayload {

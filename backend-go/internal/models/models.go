@@ -56,10 +56,22 @@ type RTIRequest struct {
 	ReviewedAt      string `json:"reviewed_at,omitempty"`
 	RejectionReason string `json:"rejection_reason,omitempty"`
 
+	// Visibility is either "public" (the default — appears on the public
+	// homepage feed once responded) or "anonymous" (only the filing citizen
+	// and admins can see it; never surfaced on the public feed).
+	Visibility string `json:"visibility,omitempty"`
+
 	ProcessedData          map[string]any   `json:"processed_data,omitempty"`
 	ClarificationRequested map[string]any   `json:"clarification_requested,omitempty"`
 	ClarificationHistory   []map[string]any `json:"clarification_history"`
 	CitizenUpdates         []map[string]any `json:"citizen_updates"`
+}
+
+// IsAnonymous reports whether this request is opted out of the public feed.
+// Missing/empty visibility is treated as "public" to keep the seed data
+// compatible without a migration.
+func (r *RTIRequest) IsAnonymous() bool {
+	return r.Visibility == "anonymous"
 }
 
 // DB is the top-level on-disk store. Mirrors backend/data/sample_data.json.
@@ -84,6 +96,7 @@ type PublicRequest struct {
 	DateUpdated            string           `json:"date_updated"`
 	Response               string           `json:"response,omitempty"`
 	RejectionReason        string           `json:"rejection_reason,omitempty"`
+	Visibility             string           `json:"visibility,omitempty"`
 	ProcessedData          map[string]any   `json:"processed_data,omitempty"`
 	ClarificationRequested map[string]any   `json:"clarification_requested,omitempty"`
 	ClarificationHistory   []map[string]any `json:"clarification_history"`
@@ -105,6 +118,7 @@ func (r *RTIRequest) ToPublic() *PublicRequest {
 		DateUpdated:            r.DateUpdated,
 		Response:               r.Response,
 		RejectionReason:        r.RejectionReason,
+		Visibility:             r.Visibility,
 		ProcessedData:          r.ProcessedData,
 		ClarificationRequested: r.ClarificationRequested,
 		ClarificationHistory:   nonNilMaps(r.ClarificationHistory),

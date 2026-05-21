@@ -1,4 +1,4 @@
-# RTI4All — Right to Information portal
+# RTI4All — *Automated Transparency*
 
 A citizen-facing portal and ministry admin panel for filing and reviewing
 **Right to Information (RTI)** requests with the Maldives
@@ -9,11 +9,39 @@ ministry archive; a ministry officer approves, edits, rejects, or asks for
 clarification before the response is published — human-in-the-loop, by
 design.
 
-> Built for **Colab26 Hackathon · Team 9**.
+---
+
+## Submission info
+
+| Field         | Value                                                             |
+| ------------- | ----------------------------------------------------------------- |
+| **Project**   | RTI4All — *Automated Transparency*                                |
+| **Team**      | Team 9 · Colab26 Hackathon                                        |
+| **Track**     | **Track 1 — Automating RTI**                                      |
+| **License**   | MIT (see [`LICENSE`](./LICENSE))                                  |
+| **Repo**      | This repository                                                   |
+| **Live demo** | `docker compose up --build` → <http://localhost:5173>             |
+
+### The problem we're solving
+
+Under the **Maldives Right to Information Act (Act No. 1/2014)**, every
+citizen has the legal right to ask the government for information, and the
+ministry has 30 days to reply. In practice:
+
+- Citizens struggle to write clear RTI requests and to find prior answers.
+- Officers re-draft replies from scratch and cite the same precedents
+  over and over.
+- Both sides lose track of pending and answered requests.
+
+**RTI4All automates the boring half of RTI** — the AI structures every
+incoming request, retrieves relevant past responses, and drafts a reply.
+The officer always reviews before anything is published, so accountability
+stays with the human.
 
 ---
 
 ## Tech stack
+
 
 | Layer            | Technology                                                                       |
 | ---------------- | -------------------------------------------------------------------------------- |
@@ -778,7 +806,132 @@ offline development.
 
 ---
 
+## Public vs. anonymous requests
+
+Citizens choose, at filing time, whether a request is **public** or
+**anonymous**:
+
+- **Public** — default. Once the officer approves the reply, the
+  question and response (with the citizen's name and email stripped)
+  appear in the homepage **Recent public responses** feed at
+  `/api/public/requests`. Other citizens can see what was asked and
+  what the ministry said — that's the whole point of the RTI Act.
+- **Anonymous** — opted-in. The request is visible **only to the
+  filing citizen and admins**. It will never appear on the public
+  feed, even after the officer responds. The officer still sees the
+  citizen's profile in the admin review page (legally required for
+  proof of citizenship under the RTI Act), but the wider public never
+  sees the request existed.
+
+The visibility flag is stored on the `RTIRequest` (`"public"` /
+`"anonymous"`), and the public-feed endpoint filters out anything
+where it's set to `"anonymous"`.
+
+---
+
+## External services and APIs we use
+
+| Service / API                                                          | What we use it for                                                                                                |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Anthropic Messages API** (`api.anthropic.com`)                       | The two-agent AI pipeline — Claude Sonnet (Structurer) and Claude Haiku (Drafter). See "Models we use" above.    |
+| **[rtidhonbe.com](https://rtidhonbe.com)** — Maldives RTI vault       | Cited by the AI as an "official source the citizen may also consult" when relevant. URLs surface in the response. |
+| **[environment.gov.mv](https://environment.gov.mv)** — Ministry site   | Same role as rtidhonbe.com — referenced for policy documents, press releases, monitoring reports.                 |
+
+The Drafter is *instructed* to add a "Useful resources:" block at the
+end of its reply listing one to three relevant landing-page URLs from
+rtidhonbe.com and/or environment.gov.mv. The frontend parses that
+trailing block and renders the URLs as clickable links in a dedicated
+**Useful resources** panel under the response.
+
+> Note: we do *not* programmatically fetch from these sites at runtime
+> in the current Go backend — the Drafter cites them as
+> human-followable references only. The Python backend (preserved in
+> `backend/`) included an additional Anthropic web-tools step that did
+> server-side fetch; we removed that for the Go port to keep the
+> binary small and behaviour deterministic.
+
+---
+
+## Open-source components and licenses
+
+The following third-party libraries and data sources are used, all
+under permissive open-source licenses compatible with our own
+[`MIT LICENSE`](./LICENSE):
+
+### Backend (Go)
+
+| Library                                            | Version  | License      | Purpose                                                |
+| -------------------------------------------------- | -------- | ------------ | ------------------------------------------------------ |
+| [chi/v5](https://github.com/go-chi/chi)            | v5.1.0   | MIT          | HTTP router                                            |
+| [chi/cors](https://github.com/go-chi/cors)         | v1.2.1   | MIT          | CORS middleware                                        |
+| [golang-jwt/jwt/v5](https://github.com/golang-jwt/jwt) | v5.2.1 | MIT          | HS256 JWT issuance + verification                      |
+| [golang.org/x/crypto/bcrypt](https://pkg.go.dev/golang.org/x/crypto/bcrypt) | v0.27.0 | BSD-3-Clause | bcrypt password hashing                               |
+| Go standard library (`net/http`, `encoding/json`)  | 1.22     | BSD-3-Clause | HTTP server, JSON                                       |
+
+### Frontend (React + TypeScript)
+
+| Library                                            | Version  | License      | Purpose                                                |
+| -------------------------------------------------- | -------- | ------------ | ------------------------------------------------------ |
+| [react](https://react.dev) / react-dom             | ^18.3.1  | MIT          | UI framework                                            |
+| [react-router-dom](https://reactrouter.com)        | ^6.23.1  | MIT          | Client-side routing                                     |
+| [vite](https://vitejs.dev) + `@vitejs/plugin-react`| ^5.3.1   | MIT          | Dev server, bundler                                     |
+| [typescript](https://www.typescriptlang.org)       | ^5.5.4   | Apache-2.0   | Strict-mode types                                       |
+| [tailwindcss](https://tailwindcss.com)             | ^3.4.10  | MIT          | Utility-first CSS framework                             |
+| [autoprefixer](https://github.com/postcss/autoprefixer) | ^10.4.20 | MIT       | PostCSS plugin for vendor prefixes                      |
+| [postcss](https://postcss.org)                     | ^8.4.41  | MIT          | CSS transform pipeline                                  |
+| [Inter](https://rsms.me/inter/) typeface           | 4.x      | SIL OFL 1.1  | UI typeface (CDN-served)                                |
+
+### Inspiration & precedents (no code, conceptual)
+
+- **[graphify](https://github.com/safishamsi/graphify)** — the
+  knowledge-graph approach in the legacy Python backend was based on
+  this CLI tool. The Go port re-implements the *idea* (token / concept
+  cooccurrence graph for retrieval) deterministically in-process and
+  does not link against or invoke `graphify` at runtime. Original
+  project: MIT.
+- **shadcn/ui design language** — we did *not* depend on shadcn or
+  radix, but the visual rhythm of bordered cards + sm-tracking labels
+  is influenced by the design language popularised by those projects.
+  Our UI primitives are hand-rolled (`frontend/src/components/ui.tsx`).
+
+### Container base images
+
+| Image                          | License                    | Purpose                              |
+| ------------------------------ | -------------------------- | ------------------------------------ |
+| `golang:1.22-alpine`           | BSD-style (Alpine) + Go BSD| Backend build stage                  |
+| `alpine:3.20`                  | MIT (Alpine Linux)         | Backend runtime stage                |
+| `node:20-alpine`               | MIT (Node) + Alpine        | Frontend dev server                  |
+
+### Data
+
+- `backend-go/data/sample_data.json` — synthetic demonstration data
+  authored by the team for hackathon use (departments, FAQs, prior
+  RTI requests). Not derived from real ministry records.
+- All cited references to rtidhonbe.com and environment.gov.mv are
+  pointers to *publicly-accessible* sections of those sites; we do
+  not redistribute their content.
+
+---
+
+## Acknowledgements
+
+- **[Claude Code](https://www.anthropic.com/claude-code)** — Anthropic's
+  agentic coding tool was used extensively to scaffold the Go backend
+  rewrite, the TypeScript frontend, this README, and most of the
+  in-code documentation. Architecture and design decisions were made
+  by the team; Claude Code helped translate them into code reliably
+  and quickly.
+- **The original Python backend** (`backend/`) was authored by the
+  team during the first phase of the hackathon and is preserved for
+  reference / fallback.
+- **Maldives Right to Information Act (Act No. 1/2014)** — the legal
+  framework this project automates around. Public law; we link to it
+  but do not redistribute its text.
+
+---
+
 ## What was replaced from the Python implementation
+
 
 The Python backend (`backend/`) is preserved for reference. The Go port
 makes the following substitutions:

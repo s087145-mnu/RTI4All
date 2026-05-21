@@ -6,7 +6,7 @@
 *.swo
 *~
 
-# ─── Python (backend) ────────────────────────────────────────────────────
+# ─── Python (legacy backend) ────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
@@ -19,6 +19,16 @@ htmlcov/
 .venv/
 venv/
 env/
+
+# ─── Go (backend-go) ─────────────────────────────────────────────────────
+# The compiled binary lands at the repo root or inside the build dir.
+/backend-go/rti4all
+/backend-go/backend-go
+*.test
+*.out
+# graphify-style on-disk caches if/when persisted.
+backend-go/.rag_cache/
+backend-go/data/backups/
 
 # ─── Node (frontend) ─────────────────────────────────────────────────────
 node_modules/
@@ -39,13 +49,12 @@ docker-compose.override.yml
 .env.*
 !.env.example
 
-# ─── Project artifacts ───────────────────────────────────────────────────
-# RAG cache (embedding matrix + ids), if/when persisted to disk.
+# ─── Project artifacts (Python era) ──────────────────────────────────────
 backend/.rag_cache/
 backend/*.faiss
 backend/*.npy
 
-# Hugging Face / transformers model cache (in case someone runs outside Docker).
+# Hugging Face / transformers model cache (Python era).
 .cache/huggingface/
 
 # Hackathon scratchpads, ad-hoc test outputs.

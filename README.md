@@ -1,268 +1,770 @@
-# RTI4All — Ministry of Climate Change, Environment and Energy
+# RTI4All — Right to Information portal
 
-**Colab26 Hackathon — Team 9**
+A citizen-facing portal and ministry admin panel for filing and reviewing
+**Right to Information (RTI)** requests with the Maldives
+[Ministry of Climate Change, Environment and Energy](https://environment.gov.mv).
 
-A citizen-facing portal + ministry admin panel for filing and reviewing **Right to Information (RTI)** requests with the Maldives [Ministry of Climate Change, Environment and Energy](https://environment.gov.mv). Citizens file requests; an AI assistant drafts a response from official sources; a ministry officer approves, edits, or rejects the draft before it becomes the official record (human-in-the-loop).
+Citizens file requests; an AI assistant drafts a response grounded in the
+ministry archive; a ministry officer approves, edits, rejects, or asks for
+clarification before the response is published — human-in-the-loop, by
+design.
 
----
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Frontend | React 18 + Vite (JavaScript) |
-| Backend | Python 3.11 + FastAPI |
-| AI | Anthropic Claude Haiku 4.5 with server-side `web_search` + `web_fetch` |
-| RAG | Two-layer: vector (`sentence-transformers` + numpy cosine) + knowledge graph ([graphify](https://github.com/safishamsi/graphify)) |
-| Auth | JWT (HS256) via `python-jose`, bcrypt password hashing via `passlib` |
-| Data | In-memory sample JSON + in-memory user store (no database) |
-| Container | Docker + Docker Compose |
-| Tests | pytest + FastAPI `TestClient` |
+> Built for **Colab26 Hackathon · Team 9**.
 
 ---
 
-## How It Works
+## Tech stack
 
-### The citizen flow
-
-1. **Sign up** at `/signup` with name, email, phone, present address, and an optional national ID card number. Password is bcrypt-hashed server-side. Email is the unique account identifier (case-insensitive).
-2. **Sign in** and visit **File RTI** at `/requests/new`. The form pre-selects the only available department (the ministry); the citizen's identity is shown as a read-only "Filing as ..." header.
-3. **Submit a request** (subject + description). The backend kicks off the AI step and returns a record in status `Under Review`.
-4. **Track it** at `/requests/{id}`. While `Under Review`, the citizen sees the AI draft inside a purple **"Pending Officer Review"** card. Once an officer acts, the same page shows either a green **"Official Response"** card or a red **"Request Rejected"** card with the officer's reason.
-
-### The AI drafting step
-
-When a citizen submits a request via `POST /api/requests`:
-
-1. **Cache lookup.** A normalized key is built from the request text (lowercased, punctuation stripped, whitespace collapsed). If a previous request produced a draft for the same normalized text, that draft is reused — no LLM call. Cache hit: ~15 ms.
-2. **RAG retrieval.** The query (subject + description) is embedded and the top-k items are pulled from the in-memory vector index over the ministry's local archive — past responded RTIs (precedent) + standing FAQs (process knowledge). See "The RAG pipeline" below.
-3. **LLM call.** Claude Haiku 4.5 is invoked with the retrieved archive items injected into the system prompt **and** server-side `web_search` + `web_fetch` tools restricted via `allowed_domains` to two sources, queried in strict priority order:
-   1. **`rtidhonbe.com`** — the RTI vault (preferred).
-   2. **`environment.gov.mv`** — the ministry's official site (fallback, only if the vault doesn't have it).
-4. **Drafting.** Claude prefers archive precedent when it directly answers the question, otherwise grounds the response in web-retrieved content. Cites the source(s) it used (a prior RTI id, a FAQ id, or the domain it fetched). Cache miss: typically 15–30 s end-to-end.
-5. **Storage.** The request is saved with `status: "Under Review"`, the draft in the `response` field, and the citizen's profile snapshotted onto the record (`citizen_phone`, `citizen_address`, `citizen_id_card`).
-6. **AI failure fallback.** If the LLM call errors out (network, quota), the request is filed as `Pending` with no draft — the officer can author a response by hand from the admin panel.
-
-The AI is instructed never to invent figures, names, dates, or document references. If neither source has the answer, it says so plainly and directs the citizen to file a formal RTI application.
-
-### The RAG pipeline
-
-Two complementary retrieval layers feed the system prompt. Both ground drafts in the ministry's own archive before the LLM looks at any live web source.
-
-**Layer 1 — Vector RAG (semantic similarity)**
-
-- **Corpus**: built at startup from `data/sample_data.json`. Each **responded** RTI request becomes one chunk (`subject + description + official response`); each FAQ becomes one chunk (`question + answer`). Pending / Under Review / Rejected requests are excluded — only items that survived officer approval are treated as precedent.
-- **Embedding model**: `sentence-transformers/all-MiniLM-L6-v2` (≈90 MB, CPU-only), pre-downloaded into the Docker image. No external embedding API used.
-- **Index**: single in-memory `numpy.float32` matrix of L2-normalized vectors. Plain dot-product cosine retrieval over the whole matrix.
-- **Retrieval**: top-4 hits formatted as `MINISTRY ARCHIVE — VECTOR MATCHES:` in the system prompt.
-- **Feedback loop**: when an officer **approves** a request, `index_responded_request(...)` adds the (possibly edited) final response to the index for future retrievals.
-
-Swapping the embedder is a one-line change — `RAGIndex` takes any object that implements `embed(texts: list[str]) -> np.ndarray` (L2-normalized). Tests use a deterministic `BagOfWordsEmbedder` so they don't load PyTorch.
-
-**Layer 2 — Knowledge graph via graphify**
-
-A graph-augmented layer that finds precedent through *shared entities* — useful when a new request mentions the same project, atoll, or programme as a past one, even if the vector embeddings don't quite line up.
-
-- **Builder**: [`graphify`](https://github.com/safishamsi/graphify) (PyPI `graphifyy`). Each chunk is exported as a markdown file; `graphify extract --backend claude` runs an LLM-driven entity-and-relationship extraction over the corpus and produces `graph.json` (nodes = entities, edges = relations like `references`, `located_in`, `mentions`).
-- **Persistence — the compute-savings story**: `graph.json` is written to `backend/.rag_cache/corpus/graphify-out/` and reused on restart. The LLM extraction cost is paid **once per piece of content**, never per query and never per restart. A typical seed corpus (≈10 chunks) costs ≈ \$0.15 to extract initially; subsequent cache hits are free. Per-file extraction cache (`graphify-out/cache/`) means re-running `graphify extract` on the same corpus skips unchanged files.
-- **Retriever**: `GraphRetriever` loads `graph.json` in-process. For a query, it tokenises against node `label`s, takes top label-matched seed nodes, does 1-hop edge traversal, then groups reached nodes by `source_file` to rank chunks. **No subprocess at query time**.
-- **Retrieval**: top-3 hits (deduped against the vector hits by id) formatted as `MINISTRY ARCHIVE — GRAPH-LINKED PRECEDENT:` in the system prompt.
-- **Feedback loop**: when an officer approves a request, the new markdown file is written to the corpus dir and `graphify extract` is invoked again. Graphify's per-file cache means only the new file pays the LLM cost — typically a single chunk, ≈ \$0.01.
-- **First-run cost** on the seed corpus: ≈ \$0.15 in Anthropic tokens, observed in CI; subsequent container starts are free thanks to the cache.
-
-Tests stub the `graphify extract` subprocess so the suite runs fast (≈8 s for 46 tests) and never burns LLM tokens. The `GraphRetriever` itself is unit-tested against fixture `graph.json` files.
-
-### The admin (human-in-the-loop) review
-
-Officers are bootstrapped via the `ADMIN_EMAILS` env var (comma-separated). When a user with a matching email signs up or logs in, their JWT carries `is_admin: true` and the navbar exposes a purple **Admin** link.
-
-- **`/admin`** — Inbox of all `Under Review` requests, oldest first.
-- **`/admin/requests/{id}`** — Full review view:
-  - **Citizen profile card** — snapshot of name, email, phone, present address, ID card at filing time.
-  - **Filing card** — department, dates, and the review audit trail (`reviewed_by`, `reviewed_at`).
-  - **Original RTI** — the subject + description as written.
-  - **AI Draft Response (editable)** — a textarea pre-filled with the AI's draft.
-  - **Rejection Reason** — used by the Reject action.
-  - **Three actions:** **Save Draft** (keep `Under Review`), **Reject** (status → `Rejected`, requires a non-empty reason), **Approve & Publish** (status → `Responded`, uses the edited draft text). Any action stamps `reviewed_by` (the officer's email) and `reviewed_at`.
-
-### Example AI draft
-
-A real request for *"current installed renewable energy capacity and national targets"* returned:
-
-> Based on the Ministry's published Energy Policy and Strategy 2024–2029, the Maldives has an installed electricity capacity of 600 MW, of which 68.5 MW comes from solar PV (~6% of national consumption). At COP28 the government committed to sourcing 33% of national electricity from renewables by 2028. The RTI vault did not have this information; it was retrieved from environment.gov.mv.
+| Layer            | Technology                                                                       |
+| ---------------- | -------------------------------------------------------------------------------- |
+| Frontend         | React 18 + TypeScript + Vite, Tailwind CSS (custom grayscale + blue palette)     |
+| Backend          | Go 1.22 (chi router, net/http, golang-jwt, bcrypt)                               |
+| AI               | Anthropic Messages API — `claude-haiku-4-5` (drafts), `claude-3-5-sonnet` (JSON) |
+| Retrieval        | TF-IDF + cosine (in-process) and a token-cooccurrence graph (in-process)        |
+| Auth             | JWT (HS256) + bcrypt password hashing                                            |
+| Data             | In-memory state with atomic JSON snapshots + rotated backups                     |
+| Container        | Docker + Docker Compose (multi-stage build → ~15 MB backend image)               |
+| Legacy           | Python/FastAPI implementation retained under `backend/` for reference            |
 
 ---
 
-## Auth & Privacy Model
-
-- **Citizen-facing endpoints** (signup, login, public GETs) are open to anyone. Filing a request requires a bearer token.
-- **Admin endpoints** (`/api/admin/*`) require the JWT to carry `is_admin: true` — otherwise 403.
-- **JWT identity override** — `POST /api/requests` ignores any `citizen_name` / `email` an attacker tries to slip into the body. Both are taken from the authenticated user. Profile snapshot fields (phone, address, ID card) are also pulled from the user record, not the payload.
-- **Privacy-scoped public projection** — `GET /api/requests` and `GET /api/requests/{id}` return `PublicRTIRequest`, which omits the profile snapshot (`citizen_phone`, `citizen_address`, `citizen_id_card`) and the review audit fields (`reviewed_by`, `reviewed_at`). The full record is only exposed through admin endpoints.
-- **Token expiry** — 24 hours, HS256. Secret is `JWT_SECRET_KEY`; missing → an insecure dev fallback is used (with a startup warning).
-
-### Signup profile
-
-| Field | Required | Notes |
-|---|---|---|
-| Name (`full_name`) | ✅ | Used as the citizen name on filed RTI requests |
-| Email | ✅ | Unique account identifier; normalized to lowercase |
-| Phone number | ✅ | Free-form string (e.g. `+960 7771234`) |
-| Present address | ✅ | Free-form string |
-| ID card | — | Optional national ID number |
-| Password | ✅ | Minimum 8 characters; bcrypt-hashed |
-
-Whitespace-only values are rejected by the server. The full profile is returned on `/api/auth/me`.
-
----
-
-## Project Structure
-
-```
-RTI4All/
-├── docker-compose.yml
-├── backend/
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── main.py               # FastAPI app: routes, citizen + admin endpoints
-│   ├── ai.py                 # Claude call: RAG retrieval + web_search/web_fetch
-│   ├── auth.py               # JWT + bcrypt + admin bootstrap + user store
-│   ├── cache.py              # In-memory normalized-text query cache
-│   ├── rag.py                # Vector index — embedder + numpy cosine + DB helpers
-│   ├── graph.py              # graphify integration — corpus export, subprocess, GraphRetriever
-│   ├── data/
-│   │   └── sample_data.json  # The ministry + seed requests + FAQs
-│   └── tests/
-│       ├── conftest.py       # Shared fixture: stubbed AI, BagOfWords embedder, stubbed graphify
-│       ├── test_auth.py      # Auth flow coverage (15 tests)
-│       ├── test_admin.py     # Admin workflow coverage (12 tests)
-│       ├── test_rag.py       # Vector RAG coverage (10 tests)
-│       └── test_graph.py     # graphify retriever coverage (9 tests)
-└── frontend/
-    ├── Dockerfile
-    ├── package.json
-    ├── vite.config.js
-    ├── index.html
-    └── src/
-        ├── main.jsx
-        └── App.jsx           # All pages, routing, AuthProvider, Require* gates
-```
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running.
-- (Optional but recommended) An Anthropic API key with web-tools access. Without one, the AI step returns a clearly-labelled stub message.
-
-### Configure environment
-
-1. Copy the example environment file:
-
-```bash
-cp .env.example .env
-```
-
-2. Edit `.env` and configure the following variables:
-
-```bash
-ANTHROPIC_API_KEY=sk-ant-...                         # Your Anthropic API key
-JWT_SECRET_KEY=$(openssl rand -hex 32)               # Any high-entropy secret
-ADMIN_EMAILS=officer@gov.mv,supervisor@gov.mv        # Ministry officers
-```
-
-**Important notes:**
-
-- `ANTHROPIC_API_KEY` unset → AI step returns a stub; everything else still works.
-- `JWT_SECRET_KEY` unset → backend logs a warning and uses an insecure dev fallback. **Never run that in production.**
-- `ADMIN_EMAILS` unset → no admins exist, so the admin panel is inaccessible. Matching is case-insensitive against the email used at signup, and is re-checked at login so adding emails after a user signed up retrofits them on next login.
-
-**Admin Setup:**
-When a user signs up with an email listed in `ADMIN_EMAILS` (e.g., `officer@gov.mv`), they will automatically:
-- Receive admin privileges (`is_admin: true`)
-- Be redirected to the admin panel (`/admin`) instead of the citizen request form
-- Have access to review, approve, edit, and reject RTI requests
-
-### Run
+## Quickstart
 
 ```bash
 docker compose up --build
 ```
 
-| Service | URL |
-|---|---|
-| Frontend | http://localhost:5173 |
-| Backend API | http://localhost:8000 |
-| API docs (Swagger) | http://localhost:8000/docs |
+- Frontend: <http://localhost:5173>
+- Backend:  <http://localhost:8000/api/health>
 
-Stop with `docker compose down`.
+The Vite dev server proxies `/api/*` to the Go backend via the compose
+network, so the SPA talks to `http://localhost:5173` for everything.
 
-### Run the test suite
+### Default accounts (seeded on every boot)
+
+Two demo accounts are seeded at startup. They are how the whole flow
+gets demonstrated end-to-end.
+
+#### 🟦 Information Officer (admin)
+
+| Field        | Value                       |
+| ------------ | --------------------------- |
+| Email        | `officer@gov.mv`            |
+| Password     | `super-secret-pass`         |
+| Full name    | Officer Hassan              |
+| Address      | Ministry HQ, Male'          |
+| Phone        | +960 3001000                |
+| `is_admin`   | **true** (via `ADMIN_EMAILS`) |
+
+After login the navbar shows an **Admin** tab → `/admin` is the
+review inbox.
+
+#### 🟩 Citizen
+
+| Field        | Value                                       |
+| ------------ | ------------------------------------------- |
+| Email        | `citizen@example.mv`                        |
+| Password     | `another-pass`                              |
+| Full name    | Aishath Hassan                              |
+| Address      | H. Sunset, Hithadhoo, Addu City             |
+| Phone        | +960 7777777                                |
+| ID card      | A099887                                     |
+| `is_admin`   | false                                       |
+
+After login the navbar shows **My requests** + **File a request**.
+
+> Tip for the demo: open two browser windows side-by-side (or one
+> Chrome + one incognito), sign in as the citizen on one and the
+> officer on the other so you can watch the lifecycle in real time.
+
+### Demo script (≈3 minutes)
+
+A repeatable walkthrough that exercises every stage of the agentic
+workflow:
+
+1. **Citizen window** (`citizen@example.mv`):
+   - Click **File a request**, file something specific so the Structurer
+     scores it high:
+     - Subject: *"Solar PV capacity installed in Addu City, 2024"*
+     - Description: *"Please provide the total solar PV generation
+       capacity (in MW) commissioned in Addu City during calendar year
+       2024, broken down by island."*
+   - Submit. The detail page shows status **Under Review** with a
+     purple **Draft Response · Pending Officer Review** card.
+2. **Officer window** (`officer@gov.mv`):
+   - Click **Admin** → the new request is at the top of the inbox.
+   - Open it: left column shows the citizen's request, the AI draft
+     (editable), reject reason, and clarification form. Right rail
+     shows the AI analysis (type, complexity, completeness %).
+   - Click **Approve & publish**.
+3. **Citizen window**: refresh — status is now **Responded** with a
+   green **Official response** card.
+4. Now file a deliberately vague request as the citizen
+   (e.g. *"info about energy"*). The Structurer flags low completeness
+   → no draft is generated.
+5. **Officer window**: open the new request → click **Ask for
+   clarification**, type a message like *"Please specify which atoll
+   and which year"*, list one or two questions, submit.
+6. **Citizen window**: refresh — status is **Clarification Needed**
+   with an amber form. Fill the answers in, submit, status flips back
+   to **Under Review** with a refreshed AI analysis.
+
+Steps 1–3 demonstrate the happy path (RAG + draft + human approve);
+steps 4–6 demonstrate the agent recognising ambiguity and the
+back-and-forth loop.
+
+### Local dev without Docker
+
 
 ```bash
-docker exec rti4all-backend python -m pytest tests/ -v
+# Terminal 1 — backend
+cd backend-go
+go run .                       # listens on :8000
+
+# Terminal 2 — frontend
+cd frontend
+npm install
+VITE_API_TARGET=http://localhost:8000 npm run dev    # listens on :5173
 ```
 
-**46 tests, all external work stubbed** (no Anthropic quota burned, no model load, no graphify subprocess):
+---
 
-- **`test_auth.py` — 15 tests.** Signup success / duplicate-email / invalid-email / missing required profile field / optional `id_card` omitted / whitespace-only rejected; login with valid / wrong-password / unknown-email; `POST /api/requests` protection (no token / malformed / valid); JWT identity override (server discards attacker-supplied `citizen_name` / `email`); `/auth/me` returns full profile; public reads remain open.
-- **`test_admin.py` — 12 tests.** `ADMIN_EMAILS` bootstraps `is_admin` at signup, non-admin emails aren't promoted, flag surfaces on `/auth/me`; admin endpoints reject unauthenticated and non-admin tokens; new requests land in `Under Review` with profile snapshotted; inbox lists pending; admin can edit + approve (stamps reviewer + timestamp); admin can reject with reason; empty PATCH and invalid status rejected; PATCH on unknown ID → 404.
-- **`test_rag.py` — 10 tests.** Stubbed `BagOfWordsEmbedder` is deterministic, normalized, and ranks similar texts higher than unrelated ones; `RAGIndex.upsert` / `retrieve` returns top-k by cosine; upsert replaces by id; empty / blank queries are handled; `populate_from_db` loads only responded requests + all FAQs; startup seeds the index; admin **approval** adds the request (and a marker phrase becomes retrievable); admin **rejection** does not add to the index.
-- **`test_graph.py` — 9 tests.** `export_corpus` writes one markdown per responded RTI and per FAQ; `export_single_request` rejects non-responded items; `GraphRetriever` finds documents by label match, traverses 1-hop edges to neighbour-linked source files, returns empty when no labels match, and handles a missing `graph.json` gracefully; startup creates the graph state via the stubbed subprocess; admin **approval** invokes `run_graphify_extract` and writes a new corpus file; admin **rejection** does **not** invoke it.
+## What's in the repo
+
+```
+RTI4All/
+├── docker-compose.yml          # backend → backend-go/, frontend → frontend/
+├── .env                        # ANTHROPIC_API_KEY, JWT_SECRET_KEY, ADMIN_EMAILS
+├── README.md                   # ← this file
+│
+├── frontend/                   # React SPA — TypeScript + Tailwind, Vite
+│   ├── Dockerfile              # node:20-alpine → npm run dev
+│   ├── vite.config.ts          # proxies /api → backend:8000, @ → src
+│   ├── tailwind.config.js      # ink-* grayscale + accent-* blue
+│   ├── tsconfig.json
+│   ├── package.json
+│   └── src/
+│       ├── main.tsx            # entrypoint
+│       ├── App.tsx             # router
+│       ├── index.css           # tailwind base + focus/scrollbar polish
+│       ├── api/client.ts       # typed fetch wrapper for /api/*
+│       ├── components/         # UI kit + Layout + RouteGuards
+│       ├── context/AuthContext.tsx
+│       ├── lib/                # cn(), useAsync(), formatDate()
+│       ├── pages/              # one page per route (citizen + admin/)
+│       └── types/api.ts        # wire types mirroring the Go backend
+│
+├── backend-go/                 # Go backend (the one we ship)
+│   ├── main.go                 # startup: load data, build indexes, serve HTTP
+│   ├── Dockerfile              # multi-stage → ~15 MB Alpine image
+│   ├── go.mod / go.sum
+│   ├── data/sample_data.json   # seed corpus (departments, FAQs, prior RTIs)
+│   └── internal/
+│       ├── models/             # JSON shapes for wire + on-disk store
+│       ├── persistence/        # atomic JSON writes + rotated backups
+│       ├── cache/              # in-memory query cache for AI answers
+│       ├── rag/                # TF-IDF + cosine retrieval
+│       ├── graph/              # token-cooccurrence graph retrieval
+│       ├── ai/                 # Anthropic REST client (structure + draft)
+│       ├── auth/               # JWT, bcrypt, chi middleware
+│       └── handlers/           # all /api/* routes
+│
+└── backend/                    # Python/FastAPI (legacy reference)
+    └── ...
+```
 
 ---
 
-## API Reference
+## Architecture
 
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| GET | `/api/health` | — | Health check |
-| POST | `/api/auth/signup` | — | Create an account; returns `{access_token, user}` |
-| POST | `/api/auth/login` | — | Authenticate; returns `{access_token, user}` |
-| GET | `/api/auth/me` | **Bearer** | Return the currently signed-in user (incl. `is_admin`) |
-| GET | `/api/requests` | — | List all RTI requests (filter by `status`, `department_id`). Privacy-scoped projection |
-| GET | `/api/requests/{id}` | — | Get a single RTI request. Privacy-scoped projection |
-| POST | `/api/requests` | **Bearer** | File a new RTI request. Triggers cache lookup or live AI retrieval. Citizen identity + profile snapshot come from the JWT, not the body |
-| GET | `/api/admin/requests/pending` | **Admin** | Inbox of `Under Review` requests, oldest first. Full record |
-| GET | `/api/admin/requests/{id}` | **Admin** | Single request, full record (profile snapshot + audit fields) |
-| PATCH | `/api/admin/requests/{id}` | **Admin** | Edit response, change status, set rejection reason. Stamps `reviewed_by` + `reviewed_at` |
-| GET | `/api/departments` | — | List departments (a single entry: the ministry) |
-| GET | `/api/departments/{id}` | — | Get a single department |
-| GET | `/api/faqs` | — | List all FAQs |
-| GET | `/api/stats` | — | Summary stats: `total_requests`, `pending`, `in_progress`, `under_review`, `responded`, `rejected`, `total_departments` |
+```
+┌──────────────────────┐        HTTP        ┌─────────────────────────┐
+│ Browser (React SPA)  │  ── /api/* ──>     │  Go backend (port 8000) │
+│ Vite dev server      │   via Vite proxy   │  chi router + net/http  │
+│ port 5173            │                    │                         │
+└──────────────────────┘                    │  ┌───────────────────┐  │
+                                            │  │ in-memory DB      │  │
+                                            │  │  (requests, users)│  │
+                                            │  └─────────┬─────────┘  │
+                                            │            │            │
+                                            │  ┌─────────▼─────────┐  │
+                                            │  │  JSON persistence │  │
+                                            │  │  + backups        │  │
+                                            │  └───────────────────┘  │
+                                            │                         │
+                                            │  ┌───────────────────┐  │
+                                            │  │ RAG (TF-IDF) +    │  │
+                                            │  │ graph retrieval   │  │
+                                            │  └─────────┬─────────┘  │
+                                            │            │            │
+                                            │  ┌─────────▼─────────┐  │
+                                            │  │ Anthropic Messages│──┼──> api.anthropic.com
+                                            │  │ API client        │  │
+                                            │  └───────────────────┘  │
+                                            └─────────────────────────┘
+```
 
-Send tokens as `Authorization: Bearer <token>`. **Admin** rows additionally require `is_admin: true` in the JWT — non-admin tokens get 403.
-
-### Status values
-
-| Status | When |
-|---|---|
-| `Pending` | AI step failed; awaits human authoring |
-| `In Progress` | Legacy / seeded only — never set by the live flow |
-| `Under Review` | AI draft prepared; awaiting officer approval |
-| `Responded` | Officer approved (possibly after editing the draft) |
-| `Rejected` | Officer rejected — `rejection_reason` is populated |
-
----
-
-## Implementation Notes
-
-- **Single-ministry mode.** Only one department exists (`moccee`). The File RTI form auto-fills the department and shows it as a read-only chip instead of a dropdown.
-- **Caching.** Exact normalized match (lowercase, stripped punctuation, collapsed whitespace) keyed on `(department_id, subject + description)`. Identical re-submissions reuse the prior draft instantly. Paraphrases are treated as new and incur a fresh AI call.
-- **Why `allowed_callers=["direct"]` on the web tools.** Haiku 4.5 doesn't support the dynamic-filtering / programmatic-tool-calling mode that the `_20260209` web tools default to — `direct` puts them in the classic tool-use loop that Haiku supports.
-- **Final-block extraction.** Only the text Claude emits *after* the last tool-use block in the response is returned to the citizen. Intermediate "I'll search..." narration emitted between tool rounds is filtered out so it doesn't leak into the citizen-facing response.
-- **Vite proxy.** The dev server proxies all `/api/*` to the backend container, so the browser never makes cross-origin requests.
+Both containers come up under one `docker compose up --build`. The Python
+backend is kept under `backend/` purely as a historical reference; the
+shipping stack is `backend-go/` + the TypeScript SPA.
 
 ---
 
-## Limitations
+## The agentic workflow
 
-- **Cache is exact-match.** Paraphrased queries don't dedupe — *"plastic ban enforcement 2024"* and *"single-use plastic enforcement actions in 2024"* will each call the AI. (The RAG layer **does** match paraphrases, but only for retrieving precedent; it doesn't short-circuit the LLM call.)
-- **RAG corpus is small.** With one ministry's mock data, the archive starts at 10 chunks (3 responded RTIs + 7 FAQs) and grows by one per officer approval. Retrieval quality scales with the corpus — for production, seed both layers with real ministry RTI history and longer policy documents.
-- **graphify first-build cost.** The first container start with an empty `.rag_cache/` runs `graphify extract` on the seed corpus — ≈ \$0.15 in Anthropic tokens and ≈ 20–30 s of wall time. Every subsequent start (or container restart with the cache volume preserved) is free. Per-approval updates pay for ≈ 1 file each (~\$0.01).
-- **Two sources only.** The model is hard-walled to `rtidhonbe.com` and `environment.gov.mv`. If neither has the information, the response directs the citizen to file a formal RTI application.
-- **Latency on cache miss** is dominated by real web round-trips (15–30 s typical, longer for complex queries).
-- **Restart wipes state.** Users, filed requests, and the query cache all live in process memory — no database, no disk persistence. Re-bootstrap by signing up again.
-- **Web tools billed separately.** `web_search` and `web_fetch` are server-side Anthropic tools and count against your Anthropic web-tool quota independently from input/output tokens.
+RTI4All is not just "wrap an LLM around a form" — the AI is one stage in
+a structured, agent-style pipeline that takes a free-text citizen request
+and turns it into either an officer-ready draft or a structured "needs
+clarification" object. Every step is observable, every decision is
+auditable, and every approval makes the *next* request a little easier.
+
+Here is the full agentic loop, top to bottom:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  ① Structurer agent  (Claude Sonnet, JSON-only)                      │
+│     Subject + description  →  JSON analysis                          │
+│                                                                       │
+│       { request_type, key_questions, information_sought,             │
+│         time_period, geographic_scope, urgency_indicators,           │
+│         completeness_score ∈ [0,1],                                  │
+│         missing_information, related_policies,                       │
+│         estimated_complexity, suggested_response_approach,           │
+│         relevant_precedents }                                        │
+└──────────────────────────────────┬───────────────────────────────────┘
+                                   │
+                  completeness_score < 0.7?
+                  ┌────────────────┴────────────────┐
+              YES │                                 │ NO
+                  ▼                                 ▼
+     ┌────────────────────────┐         ┌──────────────────────────┐
+     │ ② Officer review queue │         │ ② Retriever              │
+     │   status="Under Review"│         │   - TF-IDF top-4         │
+     │   (no draft yet)       │         │   - Token-graph top-7    │
+     │                        │         │   - Dedupe by id         │
+     │ Officer reads JSON     │         │                          │
+     │ analysis, asks for     │         │     ↓                    │
+     │ clarification, or      │         │ ③ Drafter agent          │
+     │ writes draft manually  │         │   (Claude Haiku)         │
+     └────────────────────────┘         │   System prompt =        │
+                                        │     archive context      │
+                                        │   "Cite RTI ids, plain   │
+                                        │    prose, 4-8 sentences" │
+                                        └────────────┬─────────────┘
+                                                     │
+                                                     ▼
+                                        ┌──────────────────────────┐
+                                        │ status="Under Review",   │
+                                        │ response = draft text    │
+                                        │ (still needs human       │
+                                        │  approval before publish)│
+                                        └────────────┬─────────────┘
+                                                     │
+                                                     ▼
+                                        ┌──────────────────────────┐
+                                        │ ④ Officer decision       │
+                                        │   • Approve  → Responded │
+                                        │   • Reject   → Rejected  │
+                                        │   • Clarify  → Clarif.   │
+                                        │       Needed             │
+                                        └────────────┬─────────────┘
+                                                     │
+                              Approve path           │
+                                                     ▼
+                                        ┌──────────────────────────┐
+                                        │ ⑤ Feedback loop          │
+                                        │   rag.IndexResponded(req)│
+                                        │   graph.UpdateForRequest │
+                                        │   → next draft can cite  │
+                                        │     THIS one             │
+                                        └──────────────────────────┘
+```
+
+### Why this is "agentic", not just RAG
+
+A pure RAG system is one-shot: retrieve → answer. We have **two LLM
+agents with different jobs**, a deterministic retrieval layer between
+them, **explicit gating** on the model's own confidence
+(`completeness_score`), an **officer in the loop** with three meaningful
+actions, and a **feedback loop** that re-indexes every approved response.
+
+| Stage | Decides | Why it matters |
+| ----- | ------- | -------------- |
+| ① Structurer | Should we draft now, or is the request ambiguous? | Cheap upstream gate avoids wasted draft cycles + lets the officer triage faster. |
+| ② Retriever  | What past records are relevant? | The Drafter sees only ministry-authoritative context. |
+| ③ Drafter    | What is the citizen-facing wording? | Constrained by the retrieval block; instructed to cite prior RTI ids. |
+| ④ Human gate | Publish, reject, or send back to citizen? | Legal accountability stays with the officer, not the model. |
+| ⑤ Feedback  | Promote approved responses into the corpus. | Each approval improves future drafts (a tiny RLHF loop, but offline and free). |
+
+### How `completeness_score` gates the workflow
+
+The Structurer is asked to rate `completeness_score` ∈ [0, 1] for how
+self-contained the citizen's request is. The handler then branches:
+
+- `score ≥ 0.7` → retrieve + draft immediately. The officer sees an
+  AI-drafted reply they can approve, edit, or reject.
+- `score < 0.7` → no draft. The officer sees the structured JSON
+  (`missing_information`, `suggested_response_approach`) and typically
+  fires off a clarification request. The citizen replies; we re-run the
+  Structurer, and the request loops back into the queue.
+
+This is why the agent feels useful instead of noisy: ambiguous requests
+are recognised as ambiguous *before* the Drafter ever runs.
+
+---
+
+## How we use RAG and graphify
+
+The Drafter is grounded in **two parallel retrieval layers** over the
+ministry archive (responded RTI requests + FAQs). Both are populated at
+startup and refreshed on every officer approval.
+
+### Layer 1 — RAG (TF-IDF cosine)
+
+This is the "vector" layer. We index every responded RTI + every FAQ at
+startup and re-rank on each query.
+
+- Each document is tokenised: lowercase, 3+ chars, stopwords removed.
+- Term frequencies → smoothed TF-IDF weights → L2-normalised vectors.
+- `Retrieve(query, k)` = dot product against every document (cosine
+  similarity since both vectors are unit-length); take top-k.
+
+Why TF-IDF and not sentence-transformers? Two reasons:
+
+1. **Zero dependencies, zero cold start.** No model download, no GPU,
+   no Python. The retriever boots in microseconds.
+2. **Government RTI text is keyword-heavy.** Words like "coral bleaching
+   2023" or "Baa Atoll EIA" tend to be the actual signal. Embedding
+   models add semantic recall but also add "noise neighbours" — for our
+   corpus size and domain, TF-IDF is competitive and explainable.
+
+The retrieval is good enough that the Drafter often cites the exact
+prior `RTI-2024-XXXX` id its answer came from.
+
+### Layer 2 — graphify (token-cooccurrence graph)
+
+A pure cosine retriever misses "concept-adjacent" precedent: requests
+that talk about the *same topic* with *different keywords*. The Python
+implementation used the [`graphify`](https://github.com/safishamsi/graphify)
+CLI to build an LLM-extracted entity/relation graph for exactly this
+reason. The Go port keeps the same idea but does it deterministically
+in-process so we don't need a subprocess, an LLM call, or the
+graphify install.
+
+The graph is built once at startup:
+
+- **Nodes** are notable tokens (4+ chars, non-stopword) appearing in at
+  least one document.
+- **Edges** carry the co-occurrence count between two tokens within a
+  document.
+
+`Retrieve(query, k)` then does:
+
+1. Tokenise the query → query terms get weight 1.0.
+2. For each query term, take its top-8 most-cooccurring neighbours from
+   the graph and give them weight 0.5.
+3. Score every document by the sum of weights for the terms it contains.
+4. Return the top-k documents.
+
+This surfaces precedent the cosine retriever misses. A query about
+"reef monitoring data" can match a stored RTI about "coral bleaching
+surveys" because *reef* and *coral*, or *monitoring* and *survey*,
+co-occur in the same document elsewhere in the archive.
+
+> Why is this "agentic"? The graph is treated as a **second tool** the
+> system uses to assemble context, complementary to TF-IDF. The Drafter
+> sees both blocks side-by-side in its system prompt and is told to
+> prefer them over its own world knowledge.
+
+### How both layers feed the Drafter
+
+`internal/ai/ai.go: answerSystemTemplate` interpolates the two retrieval
+blocks directly into the system prompt:
+
+```
+MINISTRY ARCHIVE — VECTOR MATCHES:
+[1] Past responded RTI · RTI-2024-0001 (filed 2024-01-20)
+    Subject: Coral reef bleaching monitoring data 2023
+    Description: ...
+    Official response: ...
+
+MINISTRY ARCHIVE — GRAPH-LINKED PRECEDENT:
+[G1] Graph-linked RTI · RTI-2024-0005 (filed 2024-02-10)
+    Subject: Environmental Impact Assessment reports ...
+
+RULES:
+- Every factual claim must come from the archive shown above.
+- Cite the relevant prior RTI id (e.g. RTI-2024-0001) when you draw on it.
+- 4–8 sentences, plain prose, no markdown headings.
+```
+
+The model's behaviour collapses to: "read the cited evidence, answer in
+the citizen's voice, link back to the records." That's the entire AI
+contract.
+
+### The feedback loop
+
+When the officer approves a response, the handler calls both
+`rag.IndexResponded(...)` and `graph.UpdateForRequest(...)` outside the
+DB lock. The new response is now retrievable for the **next** request —
+the archive grows with every approval and the agent gets steadily
+better at the ministry's specific style.
+
+---
+
+## Boot sequence
+
+
+When `docker compose up --build` runs:
+
+1. **`backend-go` image** is built in two stages (golang:1.22-alpine →
+   alpine:3.20). Final image is a ~15 MB static binary plus
+   ca-certificates.
+
+2. **Backend container starts** (`main.go`):
+   1. Reads env (`PORT`, `DATA_FILE`, `JWT_SECRET_KEY`, `ADMIN_EMAILS`,
+      `ANTHROPIC_API_KEY`, `ENABLE_DATA_PERSISTENCE`, `MAX_BACKUPS`).
+   2. Ensures `data/` and `data/backups/` exist; loads
+      `data/sample_data.json` into an in-memory `*models.DB`.
+   3. Builds the auth service, Anthropic client, query cache.
+   4. Indexes every responded RTI request + every FAQ into the TF-IDF
+      `rag.Index` and the token-cooccurrence `graph.State`.
+   5. Seeds the two default users (idempotently — re-creating an existing
+      user is a no-op).
+   6. Installs the chi router, CORS, and request-logging middleware.
+   7. `http.ListenAndServe(":8000")` and waits on SIGINT/SIGTERM.
+
+3. **Frontend container** runs the Vite dev server with HMR, proxying
+   `/api` to `http://backend:8000` over the compose network.
+
+Successful boot logs look like:
+
+```
+rti4all-backend  | [startup] seeded default user officer@gov.mv
+rti4all-backend  | [startup] seeded default user citizen@example.mv
+rti4all-backend  | [startup] ✓ RTI4All backend (Go) ready
+rti4all-backend  | [startup]   requests=20 departments=5 faqs=10
+rti4all-backend  | [startup]   RAG items=19  graph docs=19  persistence=true  ai=true
+rti4all-backend  | [startup]   listening on :8000
+```
+
+---
+
+## State model
+
+There is exactly one source of truth: an in-memory `*models.DB` owned by
+the HTTP `Server` struct. Every read goes through it; every write goes
+through it. After every mutation a background goroutine snapshots it to
+disk.
+
+```go
+type DB struct {
+    Departments []Department
+    Requests    []*RTIRequest
+    FAQs        []FAQ
+}
+```
+
+`RTIRequest` carries the full record (citizen profile snapshot, response,
+review audit, structured analysis, clarification history, citizen
+updates). `PublicRequest` is the citizen-facing projection that hides the
+profile snapshot and the internal `reviewed_by` / `reviewed_at`.
+
+Users live in a separate in-memory map inside `internal/auth`. They are
+**not** persisted — restarting recreates the two default users and forgets
+everyone else. (This matches the original Python implementation.)
+
+### Persistence
+
+`internal/persistence/persistence.go` owns the on-disk JSON store:
+
+- **Atomic writes** — encode to `sample_data.json.tmp`, then `os.Rename`.
+- **Backups** — before each save, copy the live file to
+  `data/backups/sample_data_YYYYMMDD_HHMMSS.json`. Rotation keeps the most
+  recent `MAX_BACKUPS` (default 10).
+- **Recovery** — if JSON decode fails on the main file, the loader walks
+  backups newest-first and returns the first one that parses.
+
+---
+
+## HTTP API
+
+All endpoints are versionless and JSON in / JSON out. Auth is bearer JWT
+issued by `/api/auth/login` or `/api/auth/signup`. Sessions are 24 hours.
+
+```
+GET    /api/health                     → 200 {"status":"ok"}            (public)
+
+POST   /api/auth/signup                → 201 {access_token,user}        (public)
+POST   /api/auth/login                 → 200 {access_token,user}        (public)
+GET    /api/auth/me                    → 200 UserPublic                 (auth)
+
+GET    /api/departments                → 200 [Department]               (public)
+GET    /api/departments/{id}           → 200 Department | 404
+GET    /api/faqs                       → 200 [FAQ]                      (public)
+GET    /api/stats                      → 200 status counts + totals     (public)
+
+GET    /api/requests                   → 200 [PublicRequest]            (auth)
+POST   /api/requests                   → 201 RTIRequest                 (auth)
+GET    /api/requests/{id}              → 200 PublicRequest | 403 | 404  (auth)
+PATCH  /api/requests/{id}/clarify      → 200 PublicRequest              (auth, owner-only)
+
+GET    /api/admin/requests/pending     → 200 [RTIRequest]               (admin)
+GET    /api/admin/requests/{id}        → 200 RTIRequest                 (admin)
+PATCH  /api/admin/requests/{id}        → 200 RTIRequest                 (admin)
+```
+
+### Auth model
+
+- bcrypt password hashes (`golang.org/x/crypto/bcrypt`).
+- HS256 JWT with `JWT_SECRET_KEY` (`golang-jwt/jwt/v5`).
+- Claims: `sub` (email), `name`, `is_admin`, `iat`, `exp`.
+- `ADMIN_EMAILS` (comma-separated) decides who gets `is_admin=true`.
+  Checked at signup and re-checked at login (adding a user to the list
+  later promotes them on next sign-in).
+- Two chi middlewares wrap protected routes:
+  - `RequireAuth` → 401 if the bearer is missing / invalid.
+  - `RequireAdmin` → 401, then 403 if the bearer is valid but not admin.
+
+### Citizen authorisation
+
+`/api/requests` returns only the caller's own requests, unless the caller
+is admin (then it returns everything). `GET /api/requests/{id}` 403s if
+the caller doesn't own the record (admins bypass).
+`PATCH /api/requests/{id}/clarify` is owner-only — admins can't
+impersonate a citizen on the clarification reply.
+
+---
+
+## Request lifecycle
+
+### 1. Citizen files a request
+
+Frontend `NewRequestPage` POSTs to `/api/requests`:
+
+```json
+{ "department_id": "moccee",
+  "subject": "How do I file a follow-up RTI?",
+  "description": "I would like a brief explanation of the procedure..." }
+```
+
+`handlers.createRequest`:
+
+1. Reads the authenticated user from the request context.
+2. Validates inputs and resolves the department name.
+3. Generates the next sequential id: `RTI-<year>-NNNN`.
+4. **Structures the request** via `ai.ProcessRequestStructure`, which asks
+   Claude Sonnet for a JSON object with `request_type`, `key_questions`,
+   `information_sought`, `time_period`, `geographic_scope`,
+   `urgency_indicators`, `completeness_score`, `missing_information`,
+   `related_policies`, `estimated_complexity`,
+   `suggested_response_approach`, `relevant_precedents`. If the call
+   fails, a deterministic fallback is returned so the rest of the flow
+   still works.
+5. **Decides whether to draft now**:
+   - `completeness_score >= 0.7` → call `generateAnswer` to produce a
+     citizen-facing draft; status `Under Review`.
+   - Otherwise → leave `response = ""`, status `Under Review`. The
+     officer reads the analysis and asks for clarification.
+6. **Drafting** is two-step:
+   1. **Cache** — `cache.MakeKey(department_id, subject, description)`
+      normalises the text and looks for a prior identical draft.
+   2. **Retrieve + draft** —
+      - `rag.Index.Retrieve(query, 4)` for top-4 TF-IDF matches.
+      - `graph.State.Retrieve(query, 7)` for top-7 graph-linked items.
+      - Dedupe graph hits against vector hits by `id`, keep 3.
+      - Build a system prompt with both blocks; ask Claude Haiku for a
+        4–8 sentence reply citing prior RTI ids.
+7. Append to `db.Requests`, persist in the background, return to the
+   citizen.
+
+### 2. Citizen sees their request
+
+`RequestDetailPage` GETs `/api/requests/{id}` and renders the
+`PublicRequest`. If status is `Under Review` and a draft exists, a
+purple "Draft Response · Pending Officer Review" card is shown with a
+disclaimer.
+
+### 3. Officer reviews
+
+The officer logs in (admin token issued because their email is in
+`ADMIN_EMAILS`), opens the admin inbox at `/admin`, which GETs
+`/api/admin/requests/pending`. They click into a row and see the full
+record on `/api/admin/requests/{id}` — citizen profile, AI analysis, AI
+draft.
+
+Three actions:
+
+#### a) Approve
+
+PATCH `{ response, status: "Responded" }`. The handler updates the
+record, stamps `reviewed_by` / `reviewed_at`, **and** snapshots the
+request to update the RAG index + token-cooccurrence graph. Every
+approval enriches the corpus available to future drafts.
+
+#### b) Reject
+
+PATCH `{ status: "Rejected", rejection_reason }`. Same audit stamping, no
+index update.
+
+#### c) Request clarification
+
+PATCH `{ request_clarification: { message, missing_fields, questions,
+suggested_improvements } }`. Appends to `clarification_history`, sets
+`clarification_requested`, status flips to `Clarification Needed`.
+
+### 4. Citizen answers clarification
+
+`PATCH /api/requests/{id}/clarify` with updated description, additional
+info, and answers-to-questions. The handler:
+
+1. 403s unless the caller owns the request.
+2. 400s unless current status is `Clarification Needed`.
+3. Appends to `citizen_updates`, updates the description if a new one was
+   supplied, clears `clarification_requested`, flips status back to
+   `Under Review`.
+4. Re-runs `ProcessRequestStructure` so the officer sees a refreshed
+   analysis.
+
+---
+
+## Frontend ↔ backend mapping
+
+
+| Page                       | Endpoints                                                                |
+| -------------------------- | ------------------------------------------------------------------------- |
+| `HomePage`                 | `GET /api/stats`                                                          |
+| `LoginPage` / `SignupPage` | `POST /api/auth/login`, `POST /api/auth/signup`                           |
+| `RequestsPage`             | `GET /api/requests`                                                       |
+| `RequestDetailPage`        | `GET /api/requests/{id}`, `PATCH /api/requests/{id}/clarify`              |
+| `NewRequestPage`           | `GET /api/departments`, `POST /api/requests`                              |
+| `DepartmentsPage`          | `GET /api/departments`                                                    |
+| `FaqsPage`                 | `GET /api/faqs`                                                           |
+| `AdminInboxPage`           | `GET /api/admin/requests/pending`                                         |
+| `AdminReviewPage`          | `GET /api/admin/requests/{id}`, `PATCH /api/admin/requests/{id}`          |
+
+Auth is stored in `localStorage` under `rti4all-auth`. The api client
+fires a `rti4all:unauthorized` event on any 401, which `AuthProvider`
+listens for and uses to clear the token + redirect to login.
+
+---
+
+## Design system
+
+The SPA leans into a **minimalist, mostly-monochrome** aesthetic — the
+intent is for the page to read as a calm grayscale by default, with a
+single blue accent reserved for primary CTAs, focus rings, and the brand
+mark.
+
+- **Palette**:
+  - `ink-50…950` — neutral grayscale for backgrounds, borders, text
+    (zinc-ish).
+  - `accent-50…900` — saturated blue, used sparingly.
+  - Status pills (`StatusBadge`) carry small coloured dots
+    (emerald / violet / amber / red / blue) inside a neutral chip so
+    statuses read at a glance without breaking the monochrome page.
+- **Typography**: Inter from `rsms.me`, system fallback. Tight tracking
+  on headings (`tracking-tight`).
+- **Elevation**: a single soft `shadow-card`. No drop-shadow drama.
+- **Focus**: 3px blue glow, no outline. Subtle and accessible.
+
+The UI kit (`frontend/src/components/ui.tsx`) is tiny on purpose: `Card`,
+`Button`, `LinkButton`, `Input`, `Select`, `Textarea`, `Field`,
+`StatusBadge`, `Spinner`, `EmptyState`, `ErrorBanner`, `PageHeader`,
+`Container`. No radix, no shadcn — the surface area is small enough that
+hand-rolled primitives are simpler to maintain.
+
+---
+
+## Environment configuration
+
+`.env` is loaded by docker compose via `env_file:`. All variables have
+safe defaults so the stack boots without one.
+
+| Variable                    | Used by                | Default                       |
+| --------------------------- | ---------------------- | ----------------------------- |
+| `PORT`                      | backend                | `8000`                        |
+| `DATA_FILE`                 | backend                | `data/sample_data.json`       |
+| `JWT_SECRET_KEY`            | backend / auth         | dev fallback (insecure)       |
+| `ADMIN_EMAILS`              | backend / auth         | empty                         |
+| `ANTHROPIC_API_KEY`         | backend / ai           | empty (stub responses)        |
+| `ANTHROPIC_MODEL`           | backend / ai (draft)   | `claude-haiku-4-5`            |
+| `ANTHROPIC_STRUCTURE_MODEL` | backend / ai (JSON)    | `claude-3-5-sonnet-20241022`  |
+| `ENABLE_DATA_PERSISTENCE`   | backend                | `true`                        |
+| `MAX_BACKUPS`               | backend                | `10`                          |
+| `VITE_API_TARGET`           | frontend (local dev)   | `http://backend:8000`         |
+
+If `ANTHROPIC_API_KEY` is unset, the AI step returns a clearly-labelled
+stub response — the rest of the workflow still functions, useful for
+offline development.
+
+---
+
+## Failure modes and how they're handled
+
+| Failure                                       | Behaviour                                                                                |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Anthropic API down / quota hit                | `AnswerRequest` returns an error → request still filed with `status="Pending"`, no draft. |
+| Anthropic returns bad JSON                    | `ProcessRequestStructure` falls back to a deterministic skeleton; request still created. |
+| `sample_data.json` corrupted                  | Loader walks `data/backups/` newest-first and returns the first that parses.             |
+| Persistence write fails                       | Logged; the in-memory DB still has the change (so the response succeeds).                |
+| Token expired / revoked                       | Backend returns 401; api client fires `rti4all:unauthorized` → AuthProvider clears local state. |
+| Non-admin hits `/admin/*`                     | 403 `Administrator access required.`                                                     |
+| Citizen tries to read someone else's request  | 403 `You do not have permission to access this request.`                                 |
+| Citizen tries to clarify outside the workflow | 400 `No clarification has been requested for this request.`                              |
+
+---
+
+## What was replaced from the Python implementation
+
+The Python backend (`backend/`) is preserved for reference. The Go port
+makes the following substitutions:
+
+| Concern             | Python                                          | Go                                                  |
+| ------------------- | ----------------------------------------------- | --------------------------------------------------- |
+| HTTP framework      | FastAPI + uvicorn                               | chi + net/http                                      |
+| Auth                | python-jose + passlib/bcrypt                    | golang-jwt + golang.org/x/crypto/bcrypt             |
+| Anthropic client    | `anthropic` SDK + web tools (`web_search`)      | direct REST over net/http, no web tools             |
+| Embeddings          | sentence-transformers (`all-MiniLM-L6-v2`)      | TF-IDF + cosine, in-process                         |
+| Knowledge graph     | `graphify` CLI subprocess + LLM extraction      | token-cooccurrence graph, in-process                |
+| Container size      | ~1 GB (PyTorch + transformers)                  | ~15 MB (static binary on Alpine)                    |
+| Cold start          | ~10–15 s (model load)                           | ~50 ms                                              |
+
+The HTTP contract is identical, so the React frontend was rewritten in
+TypeScript + Tailwind without any API-shape changes.
+
+---
+
+## Mental model — one diagram
+
+```
+        File RTI            Officer review            Citizen sees
+            │                      │                       │
+            ▼                      ▼                       ▼
+┌──────────────────┐   ┌────────────────────┐   ┌──────────────────┐
+│ POST /api/       │   │ PATCH /api/admin/  │   │ GET  /api/       │
+│   requests       │   │   requests/{id}    │   │   requests/{id}  │
+└────────┬─────────┘   └─────────┬──────────┘   └──────────────────┘
+         │                       │                       ▲
+         │  ┌────────────────────┘                       │
+         │  │                                            │
+         ▼  ▼                                            │
+┌──────────────────────────────────────────────┐         │
+│  in-memory models.DB  (single source of truth)│────────┘
+└────┬──────────────────────────────┬───────────┘
+     │                              │
+     ▼                              ▼
+┌───────────────────┐      ┌──────────────────────┐
+│ AI: structure +   │      │ persistence: atomic  │
+│ draft (Anthropic) │      │ JSON + backups       │
+└────────┬──────────┘      └──────────────────────┘
+         │
+         ▼
+┌──────────────────────────────┐
+│ retrieval (TF-IDF + token    │
+│ cooccurrence graph) over the │
+│ ministry archive             │
+└──────────────────────────────┘
+```
+
+That's the whole system.

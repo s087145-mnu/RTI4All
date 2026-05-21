@@ -38,6 +38,74 @@ incoming request, retrieves relevant past responses, and drafts a reply.
 The officer always reviews before anything is published, so accountability
 stays with the human.
 
+### What we built in this hackathon
+
+This project implements **Agentic RTI Disclosure** — an AI agent that automates the operational steps of responding to Right to Information requests for the **Ministry of Environment and Climate Change (MoECC)**. This is a **Wave 1 pilot** use case selected through the CoLab National AI Use Case Selection Sprint (Cycle 1).
+
+#### The AI agent workflow
+
+The system follows a multi-step agentic workflow:
+
+1. **Request analysis** — the agent reads the incoming RTI request and identifies what is being asked for: subject matter, scope, time period, preferred format, and any specific data points.
+
+2. **Data retrieval** — the agent searches the ministry's internal data repositories (in this prototype: historical RTI responses, FAQs, and internal documents) using a dual-layer retrieval system:
+   - **Layer 1**: TF-IDF cosine similarity for semantic matching
+   - **Layer 2**: Token co-occurrence graph for contextual relationships
+
+3. **Response composition** — the agent assembles a response in the format requested by the citizen (tabular, narrative, summary statistics) with appropriate citations and metadata.
+
+4. **Gap detection and escalation** — if requested information is incomplete or unavailable, the agent flags this to the responsible staff member with a clear summary of what is missing and why.
+
+5. **Human review before release** — drafted responses are reviewed by ministry staff before they are returned to the citizen. **Staff retain final authority on every release**.
+
+The technical positioning is **"agentic AI"** — the system reasons across multiple steps, uses internal tools (data search, format conversion, gap detection) autonomously within a defined workflow, but operates under human authorisation for outbound disclosure.
+
+#### Who benefits
+
+| Beneficiary | Primary value |
+|-------------|---------------|
+| **Citizens** | Faster, more consistent responses to RTI requests; better access to government-held information |
+| **Ministry staff** | Reduced manual workload on routine requests; capacity reallocated to substantive cases |
+| **The wider transparency framework** | Stronger institutional capacity to deliver on the Right to Information Act |
+| **Civil society and researchers** | More reliable timelines for accessing public information |
+
+**Estimated reach**: approximately **500,000 citizens** — effectively the entire eligible Maldivian population — for whom RTI is a foundational right.
+
+#### Technical accomplishments
+
+During this hackathon, we successfully implemented:
+
+✅ **Agentic architecture for document and data retrieval** — Multi-step reasoning agent that can plan, retrieve from heterogeneous sources, and reason about completeness across the workflow. Includes tool use, memory management, and self-correction via completeness scoring.
+
+✅ **Information extraction from semi-structured data** — Practical techniques for retrieving relevant information from collections of diverse document formats (simulated ministry data) with inconsistent formatting — a common reality across government data estates.
+
+✅ **Format-aware response generation** — Generating responses in the exact format the citizen requested (table, summary, narrative) while preserving the integrity of the underlying source data.
+
+✅ **Sensitivity and exclusion handling** — Framework for the agent to identify cases that may touch sensitive or partially-disclosable information and route them to appropriate human review rather than attempting to handle them autonomously.
+
+✅ **Audit and accountability** — Every AI-assisted disclosure is traceable: what was asked, what was retrieved, what gaps were detected, and what the staff reviewer approved. Full request lifecycle tracking with state transitions.
+
+✅ **Cross-ministry extensibility** — Built with architectural choices that allow other ministries to adopt the same agentic pattern for their own RTI workflows without rebuilding from scratch. Modular department structure and configurable retrieval systems.
+
+#### Data foundation (prototype)
+
+This hackathon prototype uses:
+
+- **General data sheets and internal documents** — tabular and document formats, updated monthly, representing the ministry's internal data assets
+- **Historical RTI responses** — past requests and approved answers that serve as precedents
+- **FAQs and policy documents** — common questions and standardized guidance
+
+Data is indexed across multiple sources with variable structure — precisely the bottleneck the AI agent is designed to address through intelligent retrieval and gap detection.
+
+#### Future technical work
+
+Areas for expansion beyond this hackathon:
+
+- **Dhivehi-language request handling** — RTI requests submitted in Dhivehi require the agent to comprehend the request, search Dhivehi-language data, and respond in Dhivehi. Language capability for both directions.
+- **Multi-ministry data federation** — Handling requests that span multiple ministries
+- **Advanced sensitivity detection** — Enhanced models for identifying legal exemptions and partial disclosure scenarios
+- **Real-time ministry data integration** — Building searchable indices across live ministry data assets
+
 ---
 
 ## Tech stack

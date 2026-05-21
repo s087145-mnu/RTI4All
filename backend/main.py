@@ -27,6 +27,7 @@ from cache import QueryCache
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from graph import GraphState
+from persistence import PersistenceError, get_data_store
 from pydantic import BaseModel
 from rag import (
     RAGIndex,
@@ -62,6 +63,7 @@ app.add_middleware(
 DATA_FILE = Path(__file__).parent / "data" / "sample_data.json"
 
 _db: dict = {}
+_data_store = None  # Initialized in startup
 _query_cache = QueryCache()
 _rag_index = RAGIndex(SentenceTransformersEmbedder())
 _graph_state = GraphState()
@@ -70,22 +72,58 @@ _graph_state = GraphState()
 @app.on_event("startup")
 def load_data() -> None:
     """Load seed data, build the vector index, and build/load the graph."""
-    with open(DATA_FILE, encoding="utf-8") as fh:
-        _db.update(json.load(fh))
-    populate_from_db(_rag_index, _db)
-    # Build graph on cache miss; reuse persisted graph.json otherwise.
-    _graph_state.build_or_load(_db)
+    global _data_store
 
-    # Create default users if they don't exist
-    _create_default_users()
+    try:
+        # Initialize persistence layer
+        _data_store = get_data_store(DATA_FILE, enable_persistence=True)
 
-    print(
-        f"[startup] Loaded {len(_db['requests'])} requests, "
-        f"{len(_db['departments'])} departments, "
-        f"{len(_db['faqs'])} FAQs. "
-        f"RAG index: {len(_rag_index)} items. "
-        f"Graph: {len(_graph_state.retriever)} nodes."
-    )
+        # Load data from file
+        if _data_store:
+            try:
+                _db.update(_data_store.load())
+                log.info("Data loaded via persistence layer")
+            except PersistenceError as e:
+                log.error(f"Failed to load from persistence layer: {e}")
+                # Fall back to direct file read
+                with open(DATA_FILE, encoding="utf-8") as fh:
+                    _db.update(json.load(fh))
+                log.warning("Loaded data directly from file (persistence disabled)")
+        else:
+            # Persistence disabled, load directly
+            with open(DATA_FILE, encoding="utf-8") as fh:
+                _db.update(json.load(fh))
+            log.info("Persistence disabled, loaded data directly from file")
+
+        # Build RAG index from responded requests
+        populate_from_db(_rag_index, _db)
+        log.info(f"RAG index populated with {len(_rag_index)} items")
+
+        # Build graph on cache miss; reuse persisted graph.json otherwise.
+        try:
+            _graph_state.build_or_load(_db)
+            log.info(f"Graph loaded with {len(_graph_state.retriever)} nodes")
+        except Exception as e:
+            log.error(f"Failed to build/load graph: {e}", exc_info=True)
+            log.warning("Continuing without graph-based retrieval")
+
+        # Create default users if they don't exist
+        try:
+            _create_default_users()
+        except Exception as e:
+            log.error(f"Failed to create default users: {e}", exc_info=True)
+
+        print(
+            f"[startup] ✓ Loaded {len(_db['requests'])} requests, "
+            f"{len(_db['departments'])} departments, "
+            f"{len(_db['faqs'])} FAQs. "
+            f"RAG index: {len(_rag_index)} items. "
+            f"Graph: {len(_graph_state.retriever)} nodes. "
+            f"Persistence: {'enabled' if _data_store else 'disabled'}"
+        )
+    except Exception as e:
+        log.critical(f"Startup failed: {e}", exc_info=True)
+        raise
 
 
 def _create_default_users() -> None:
@@ -123,6 +161,19 @@ def _create_default_users() -> None:
     except Exception:
         # User already exists
         pass
+
+
+def _persist_data() -> None:
+    """Persist current data to disk if persistence is enabled."""
+    if _data_store:
+        try:
+            _data_store.save(_db)
+            log.debug("Data persisted to disk")
+        except PersistenceError as e:
+            log.error(f"Failed to persist data: {e}")
+            # Don't fail the request if persistence fails
+        except Exception as e:
+            log.error(f"Unexpected error persisting data: {e}", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +458,14 @@ def create_request(
     }
 
     _db["requests"].append(new_request)
+
+    # Persist to disk
+    try:
+        _persist_data()
+    except Exception as e:
+        log.error(f"Failed to persist after creating request: {e}")
+        # Continue - request is in memory even if persistence fails
+
     return new_request
 
 
@@ -430,24 +489,55 @@ def _generate_answer(
     so the citizen can still track it; the officer can author a response by
     hand from the admin panel.
     """
-    cache_key = QueryCache.make_key(department_id, subject, description)
-    cached = _query_cache.get(cache_key)
-    if cached is not None:
-        return cached, "Under Review"
+    # Validate inputs
+    if not subject or not subject.strip():
+        log.warning("Empty subject provided to _generate_answer")
+        return None, "Pending"
 
+    if not description or not description.strip():
+        log.warning("Empty description provided to _generate_answer")
+        return None, "Pending"
+
+    # Check cache first
+    cache_key = None
     try:
+        cache_key = QueryCache.make_key(department_id, subject, description)
+        cached = _query_cache.get(cache_key)
+        if cached is not None:
+            log.info(f"Cache hit for request about '{subject[:50]}...'")
+            return cached, "Under Review"
+    except Exception as e:
+        log.warning(f"Cache lookup failed: {e}")
+        # Continue without cache
+
+    # Try AI generation
+    try:
+        log.info(f"Generating AI response for request about '{subject[:50]}...'")
         answer = answer_request(
             subject=subject,
             description=description,
             rag_index=_rag_index,
             graph_retriever=_graph_state.retriever,
         )
-    except Exception:
-        log.exception("AI answer step failed; filing request as Pending.")
-        return None, "Pending"
 
-    _query_cache.put(cache_key, answer)
-    return answer, "Under Review"
+        if not answer or not answer.strip():
+            log.warning("AI returned empty answer")
+            return None, "Pending"
+
+        # Cache the result if we have a valid cache key
+        if cache_key:
+            try:
+                _query_cache.put(cache_key, answer)
+            except Exception as e:
+                log.warning(f"Failed to cache answer: {e}")
+                # Continue - we have the answer even if caching fails
+
+        log.info(f"AI answer generated successfully ({len(answer)} chars)")
+        return answer, "Under Review"
+
+    except Exception as e:
+        log.error(f"AI answer step failed: {e}", exc_info=True)
+        return None, "Pending"
 
 
 # ── Departments ──────────────────────────────────────────────────────────────
@@ -611,12 +701,25 @@ def admin_update_request(
 
     # Feedback loop: approved responses become precedent for both retrievers.
     if target.get("status") == "Responded":
-        index_responded_request(_rag_index, target)
+        try:
+            index_responded_request(_rag_index, target)
+            log.debug(f"Indexed responded request {request_id} in RAG")
+        except Exception as e:
+            log.error(f"Failed to index request in RAG: {e}", exc_info=True)
+
         # graphify caches per-file extractions, so only the new markdown file
         # pays an LLM call here.
         try:
             _graph_state.update_for_request(target)
-        except Exception:
-            log.exception("graph update_for_request failed (non-fatal).")
+            log.debug(f"Updated graph for request {request_id}")
+        except Exception as e:
+            log.error(f"Graph update_for_request failed: {e}", exc_info=True)
+
+    # Persist to disk
+    try:
+        _persist_data()
+    except Exception as e:
+        log.error(f"Failed to persist after updating request: {e}")
+        # Continue - update is in memory even if persistence fails
 
     return target

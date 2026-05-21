@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { useEffect } from "react";
 import { api } from "@/api/client";
 import { useAuth } from "@/context/AuthContext";
 import {
@@ -16,10 +17,18 @@ import { formatDate } from "@/lib/format";
 
 export function AdminInboxPage() {
   const { token } = useAuth();
-  const { data, loading, error } = useAsync(
+  const { data, loading, error, reload } = useAsync(
     () => api.adminPending(token!),
     [token],
   );
+
+  // Auto-reload every 30 seconds to keep inbox fresh
+  useEffect(() => {
+    const interval = setInterval(() => {
+      reload();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [reload]);
 
   return (
     <Container>
@@ -48,11 +57,13 @@ export function AdminInboxPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-ink-100 bg-ink-50/60">
-                  {["ID", "Citizen", "Subject", "Status", "Filed", ""].map((h) => (
-                    <th key={h} className="label px-5 py-2.5 text-left">
-                      {h}
-                    </th>
-                  ))}
+                  {["ID", "Citizen", "Subject", "Status", "Filed", ""].map(
+                    (h) => (
+                      <th key={h} className="label px-5 py-2.5 text-left">
+                        {h}
+                      </th>
+                    ),
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -65,8 +76,12 @@ export function AdminInboxPage() {
                       {req.id}
                     </td>
                     <td className="px-5 py-3">
-                      <div className="text-sm text-ink-900">{req.citizen_name}</div>
-                      <div className="text-[11px] text-ink-500">{req.email}</div>
+                      <div className="text-sm text-ink-900">
+                        {req.citizen_name}
+                      </div>
+                      <div className="text-[11px] text-ink-500">
+                        {req.email}
+                      </div>
                     </td>
                     <td className="max-w-md truncate px-5 py-3">
                       <Link

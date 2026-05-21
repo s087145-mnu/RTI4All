@@ -34,10 +34,12 @@ export function AdminReviewPage() {
   const { id = "" } = useParams<{ id: string }>();
   const { token } = useAuth();
   const navigate = useNavigate();
-  const { data: req, loading, error, reload } = useAsync(
-    () => api.adminGetRequest(token!, id),
-    [token, id],
-  );
+  const {
+    data: req,
+    loading,
+    error,
+    reload,
+  } = useAsync(() => api.adminGetRequest(token!, id), [token, id]);
 
   const [draft, setDraft] = useState("");
   const [rejectionReason, setRejectionReason] = useState("");
@@ -48,6 +50,44 @@ export function AdminReviewPage() {
 
   const [action, setAction] = useState<SaveAction>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+
+  // Track unsaved changes
+  useEffect(() => {
+    if (req) {
+      const draftChanged = draft !== (req.response ?? "");
+      const rejectionChanged = rejectionReason !== (req.rejection_reason ?? "");
+      setHasUnsavedChanges(draftChanged || rejectionChanged);
+    }
+  }, [draft, rejectionReason, req]);
+
+  // Warn before leaving with unsaved changes
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Cmd/Ctrl + S to save draft
+      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+        e.preventDefault();
+        if (action === null) {
+          handle("save");
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [action, draft]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (req) {
@@ -62,47 +102,89 @@ export function AdminReviewPage() {
   const handle = async (kind: Exclude<SaveAction, null>) => {
     setAction(kind);
     setActionError(null);
+    setActionSuccess(null);
+
+    // Confirm destructive actions
+    if (kind === "approve") {
+      const confirmed = window.confirm(
+        "Are you sure you want to approve and publish this response? The citizen will be able to see it immediately.",
+      );
+      if (!confirmed) {
+        setAction(null);
+        return;
+      }
+    }
+
+    if (kind === "reject") {
+      const confirmed = window.confirm(
+        "Are you sure you want to reject this request? This action will notify the citizen.",
+      );
+      if (!confirmed) {
+        setAction(null);
+        return;
+      }
+    }
+
     try {
       if (kind === "approve") {
-        await patch({ response: draft, status: "Responded" });
+        const trimmedDraft = draft.trim();
+        if (!trimmedDraft) {
+          throw new Error("Please provide a response before approving.");
+        }
+        await patch({ response: trimmedDraft, status: "Responded" });
         navigate("/admin");
         return;
       }
       if (kind === "reject") {
-        if (!rejectionReason.trim()) {
+        const trimmedReason = rejectionReason.trim();
+        if (!trimmedReason) {
           throw new Error("Please provide a rejection reason.");
         }
-        await patch({ status: "Rejected", rejection_reason: rejectionReason });
+        await patch({ status: "Rejected", rejection_reason: trimmedReason });
         navigate("/admin");
         return;
       }
       if (kind === "save") {
-        await patch({ response: draft });
+        const trimmedDraft = draft.trim();
+        if (!trimmedDraft) {
+          throw new Error("Cannot save an empty draft.");
+        }
+        await patch({ response: trimmedDraft });
         await reload();
+        setActionSuccess("✓ Draft saved successfully");
+        setTimeout(() => setActionSuccess(null), 3000);
         return;
       }
       if (kind === "clarify") {
-        if (!clarMessage.trim()) {
+        const trimmedMessage = clarMessage.trim();
+        if (!trimmedMessage) {
           throw new Error("Please add a message for the citizen.");
         }
+        const questions = clarQuestions
+          .split("\n")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const missingFields = clarMissingFields
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+
         await patch({
           request_clarification: {
-            message: clarMessage,
-            questions: clarQuestions
-              .split("\n")
-              .map((s) => s.trim())
-              .filter(Boolean),
-            missing_fields: clarMissingFields
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean),
+            message: trimmedMessage,
+            questions,
+            missing_fields: missingFields,
           },
         });
         navigate("/admin");
         return;
       }
     } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
+      if (err instanceof Error) {
+        setActionError(err.message);
+      } else {
+        setActionError(String(err));
+      }
     } finally {
       setAction(null);
     }
@@ -128,6 +210,16 @@ export function AdminReviewPage() {
       <Link
         to="/admin"
         className="mb-3 inline-flex items-center gap-1.5 text-xs font-medium text-ink-500 transition-colors hover:text-ink-900"
+        onClick={(e) => {
+          if (hasUnsavedChanges) {
+            const confirmed = window.confirm(
+              "You have unsaved changes. Are you sure you want to leave?",
+            );
+            if (!confirmed) {
+              e.preventDefault();
+            }
+          }
+        }}
       >
         ← Back to inbox
       </Link>
@@ -221,15 +313,20 @@ export function AdminReviewPage() {
           </Card>
 
           {actionError ? <ErrorBanner message={actionError} /> : null}
+          {actionSuccess ? (
+            <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
+              {actionSuccess}
+            </div>
+          ) : null}
 
           <div className="sticky bottom-4 z-20 flex flex-wrap items-center justify-end gap-2 rounded-xl border border-ink-200 bg-white/95 px-4 py-3 shadow-card backdrop-blur">
             <Button
               variant="ghost"
               onClick={() => handle("save")}
               loading={action === "save"}
-              disabled={action !== null}
+              disabled={action !== null || !hasUnsavedChanges}
             >
-              Save draft
+              {hasUnsavedChanges ? "Save draft *" : "Save draft"}
             </Button>
             <Button
               variant="secondary"
@@ -273,11 +370,20 @@ export function AdminReviewPage() {
           <Card>
             <CardHeader title="Audit" />
             <CardBody className="py-2">
-              <MetaRow label="Status" value={<StatusBadge status={req.status} />} />
+              <MetaRow
+                label="Status"
+                value={<StatusBadge status={req.status} />}
+              />
               <MetaRow label="Filed" value={formatDate(req.date_filed)} />
-              <MetaRow label="Last updated" value={formatDate(req.date_updated)} />
+              <MetaRow
+                label="Last updated"
+                value={formatDate(req.date_updated)}
+              />
               <MetaRow label="Reviewed by" value={req.reviewed_by} />
-              <MetaRow label="Reviewed at" value={formatDate(req.reviewed_at)} />
+              <MetaRow
+                label="Reviewed at"
+                value={formatDate(req.reviewed_at)}
+              />
             </CardBody>
           </Card>
 

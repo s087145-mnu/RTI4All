@@ -78,11 +78,20 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) {
+    // Network error (no connection, CORS, etc.)
+    throw new ApiError(
+      "Network error. Please check your connection and try again.",
+      0,
+    );
+  }
 
   if (res.status === 401) {
     window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
@@ -93,9 +102,22 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
     return undefined as unknown as T;
   }
 
-  const payload = await res.json().catch(() => ({}));
+  let payload: unknown;
+  try {
+    payload = await res.json();
+  } catch (err) {
+    // Response is not valid JSON
+    if (!res.ok) {
+      throw new ApiError(`HTTP ${res.status}: ${res.statusText}`, res.status);
+    }
+    payload = {};
+  }
+
   if (!res.ok) {
-    throw new ApiError(extractDetail(payload, `HTTP ${res.status}`), res.status);
+    throw new ApiError(
+      extractDetail(payload, `HTTP ${res.status}`),
+      res.status,
+    );
   }
   return payload as T;
 }
@@ -118,14 +140,15 @@ export const api = {
   faqs: () => request<FAQ[]>("/faqs"),
   stats: () => request<Stats>("/stats"),
   publicFeed: (limit = 5) =>
-    request<PublicFeedItem[]>("/public/requests", { query: { limit: String(limit) } }),
+    request<PublicFeedItem[]>("/public/requests", {
+      query: { limit: String(limit) },
+    }),
 
   // Citizen requests
   listMyRequests: (
     token: string,
     filters?: { status?: string; department_id?: string },
-  ) =>
-    request<PublicRequest[]>("/requests", { token, query: filters }),
+  ) => request<PublicRequest[]>("/requests", { token, query: filters }),
   getRequest: (token: string, id: string) =>
     request<PublicRequest>(`/requests/${id}`, { token }),
   createRequest: (token: string, payload: CreateRequestPayload) =>
@@ -134,11 +157,7 @@ export const api = {
       body: payload,
       token,
     }),
-  citizenClarify: (
-    token: string,
-    id: string,
-    payload: CitizenClarifyPayload,
-  ) =>
+  citizenClarify: (token: string, id: string, payload: CitizenClarifyPayload) =>
     request<PublicRequest>(`/requests/${id}/clarify`, {
       method: "PATCH",
       body: payload,
@@ -150,7 +169,11 @@ export const api = {
     request<AdminRequest[]>("/admin/requests/pending", { token }),
   adminGetRequest: (token: string, id: string) =>
     request<AdminRequest>(`/admin/requests/${id}`, { token }),
-  adminUpdateRequest: (token: string, id: string, payload: AdminUpdatePayload) =>
+  adminUpdateRequest: (
+    token: string,
+    id: string,
+    payload: AdminUpdatePayload,
+  ) =>
     request<AdminRequest>(`/admin/requests/${id}`, {
       method: "PATCH",
       body: payload,

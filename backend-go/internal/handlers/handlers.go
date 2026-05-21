@@ -541,12 +541,20 @@ type adminUpdatePayload struct {
 }
 
 func (s *Server) adminUpdateRequest(w http.ResponseWriter, r *http.Request) {
-	admin, _ := auth.FromContext(r.Context())
+	admin, ok := auth.FromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "Authentication required.")
+		return
+	}
 	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "Request ID is required.")
+		return
+	}
 
 	var p adminUpdatePayload
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid JSON body.")
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Invalid JSON body: %v", err))
 		return
 	}
 
@@ -565,9 +573,22 @@ func (s *Server) adminUpdateRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	today := time.Now().Format("2006-01-02")
 
+	// Prevent modifications to already finalized requests (except for re-opening them)
+	if (target.Status == "Responded" || target.Status == "Rejected") && p.Status == nil {
+		s.mu.Unlock()
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("Cannot modify request with status '%s'. Request is already finalized.", target.Status))
+		return
+	}
+
 	// Officer-driven clarification request takes priority and is handled as a
 	// distinct flow (matches the Python branch).
 	if p.RequestClarification != nil {
+		if strings.TrimSpace(p.RequestClarification.Message) == "" {
+			s.mu.Unlock()
+			writeError(w, http.StatusBadRequest, "Clarification message is required.")
+			return
+		}
 		clar := map[string]any{
 			"message":                p.RequestClarification.Message,
 			"missing_fields":         stringsToAny(p.RequestClarification.MissingFields),
@@ -601,8 +622,24 @@ func (s *Server) adminUpdateRequest(w http.ResponseWriter, r *http.Request) {
 	if p.Status != nil {
 		if _, ok := adminEditableStatuses[*p.Status]; !ok {
 			s.mu.Unlock()
+			validStatuses := []string{}
+			for st := range adminEditableStatuses {
+				validStatuses = append(validStatuses, st)
+			}
 			writeError(w, http.StatusBadRequest,
-				fmt.Sprintf("Invalid status '%s'.", *p.Status))
+				fmt.Sprintf("Invalid status '%s'. Valid statuses: %s", *p.Status, strings.Join(validStatuses, ", ")))
+			return
+		}
+		// Validate rejection requires rejection_reason
+		if *p.Status == "Rejected" && (p.RejectionReason == nil || strings.TrimSpace(*p.RejectionReason) == "") {
+			s.mu.Unlock()
+			writeError(w, http.StatusBadRequest, "Rejection reason is required when rejecting a request.")
+			return
+		}
+		// Validate response for Responded status
+		if *p.Status == "Responded" && (p.Response == nil || strings.TrimSpace(*p.Response) == "") {
+			s.mu.Unlock()
+			writeError(w, http.StatusBadRequest, "Response is required when marking a request as Responded.")
 			return
 		}
 		target.Status = *p.Status

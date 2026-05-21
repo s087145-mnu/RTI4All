@@ -55,7 +55,7 @@ export function RequestsPage() {
   return (
     <Container>
       <PageHeader
-        title="My requests"
+        title="Requests"
         description={
           user?.is_admin
             ? "All requests on the platform (admin view)."
@@ -83,7 +83,9 @@ export function RequestsPage() {
           >
             {STATUS_OPTIONS.map((s) => (
               <option key={s} value={s}>
-                {s === "all" ? "All statuses" : s.replace(/^./, (c) => c.toUpperCase())}
+                {s === "all"
+                  ? "All statuses"
+                  : s.replace(/^./, (c) => c.toUpperCase())}
               </option>
             ))}
           </Select>
@@ -113,14 +115,13 @@ export function RequestsPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-ink-100 bg-ink-50/60">
-                  {["ID", "Subject", "Department", "Status", "Filed"].map((h) => (
-                    <th
-                      key={h}
-                      className="label px-5 py-2.5 text-left"
-                    >
-                      {h}
-                    </th>
-                  ))}
+                  {["ID", "Subject", "Department", "Status", "Filed"].map(
+                    (h) => (
+                      <th key={h} className="label px-5 py-2.5 text-left">
+                        {h}
+                      </th>
+                    ),
+                  )}
                 </tr>
               </thead>
               <tbody>

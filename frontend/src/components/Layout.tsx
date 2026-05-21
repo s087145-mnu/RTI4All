@@ -42,7 +42,15 @@ function Brand() {
   );
 }
 
-function NavItem({ to, label, end }: { to: string; label: string; end?: boolean }) {
+function NavItem({
+  to,
+  label,
+  end,
+}: {
+  to: string;
+  label: string;
+  end?: boolean;
+}) {
   return (
     <NavLink
       to={to}
@@ -122,9 +130,9 @@ export function Navbar() {
         <Brand />
         <div className="flex items-center gap-1">
           <NavItem to="/" label="Home" end />
-          {/* `end` on "My requests" so it doesn't stay active for /requests/new
+          {/* `end` on "Requests" so it doesn't stay active for /requests/new
              or /requests/:id detail pages. */}
-          {user ? <NavItem to="/requests" label="My requests" end /> : null}
+          {user ? <NavItem to="/requests" label="Requests" end /> : null}
           {user ? <NavItem to="/requests/new" label="File a request" /> : null}
           <NavItem to="/departments" label="Departments" />
           <NavItem to="/faqs" label="FAQs" />
@@ -143,11 +151,11 @@ export function Footer() {
         <div>
           <span className="font-medium text-ink-700">RTI4All</span>
           <span className="mx-2 text-ink-300">·</span>
-          <span className="uppercase tracking-[0.12em]">Automated Transparency</span>
+          <span className="uppercase tracking-[0.12em]">
+            Automated Transparency
+          </span>
         </div>
-        <div>
-          Mandated by the Right to Information Act (Act No. 1/2014)
-        </div>
+        <div>Mandated by the Right to Information Act (Act No. 1/2014)</div>
       </div>
     </footer>
   );

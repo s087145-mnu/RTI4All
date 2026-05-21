@@ -122,7 +122,9 @@ export function Navbar() {
         <Brand />
         <div className="flex items-center gap-1">
           <NavItem to="/" label="Home" end />
-          {user ? <NavItem to="/requests" label="My requests" /> : null}
+          {/* `end` on "My requests" so it doesn't stay active for /requests/new
+             or /requests/:id detail pages. */}
+          {user ? <NavItem to="/requests" label="My requests" end /> : null}
           {user ? <NavItem to="/requests/new" label="File a request" /> : null}
           <NavItem to="/departments" label="Departments" />
           <NavItem to="/faqs" label="FAQs" />

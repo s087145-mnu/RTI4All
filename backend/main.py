@@ -35,6 +35,7 @@ from rag import (
     index_responded_request,
     populate_from_db,
 )
+from request_processor import process_request_structure
 
 log = logging.getLogger(__name__)
 
@@ -188,6 +189,37 @@ class Department(BaseModel):
     contact_email: str
 
 
+class ProcessedRequestData(BaseModel):
+    """Structured analysis of the request by AI."""
+
+    # Core information extracted
+    request_type: str  # e.g., "Data Request", "Policy Clarification", "Document Access"
+    key_questions: list[str]  # Main questions being asked
+    information_sought: list[str]  # Specific data/documents requested
+    time_period: Optional[str] = None  # e.g., "2023", "January-December 2023"
+    geographic_scope: Optional[str] = None  # e.g., "Baa Atoll", "All atolls"
+    urgency_indicators: list[str] = []  # Any time-sensitive aspects
+
+    # Analysis
+    completeness_score: float  # 0-1 score of how complete the request is
+    missing_information: list[str] = []  # What additional info would help
+    related_policies: list[str] = []  # Relevant laws/policies
+    estimated_complexity: str  # "Simple", "Moderate", "Complex"
+
+    # Officer guidance
+    suggested_response_approach: str
+    relevant_precedents: list[str] = []  # Similar past requests
+
+
+class ClarificationRequest(BaseModel):
+    """Request from officer to citizen for more information."""
+
+    message: str  # What the officer needs clarified
+    missing_fields: list[str] = []  # Specific fields that need more detail
+    questions: list[str] = []  # Specific questions for the citizen
+    suggested_improvements: list[str] = []  # How to improve the request
+
+
 class RTIRequest(BaseModel):
     """Full record, returned only by admin endpoints."""
 
@@ -213,6 +245,12 @@ class RTIRequest(BaseModel):
     reviewed_at: Optional[str] = None
     rejection_reason: Optional[str] = None
 
+    # NEW: Structured processing and clarification workflow
+    processed_data: Optional[dict] = None  # ProcessedRequestData as dict
+    clarification_requested: Optional[dict] = None  # ClarificationRequest as dict
+    clarification_history: list[dict] = []  # History of back-and-forth
+    citizen_updates: list[dict] = []  # Updates provided by citizen
+
 
 class PublicRTIRequest(BaseModel):
     """Subset returned on public (citizen-facing) GETs. Excludes sensitive
@@ -231,6 +269,12 @@ class PublicRTIRequest(BaseModel):
     date_updated: str
     response: Optional[str] = None
     rejection_reason: Optional[str] = None
+
+    # NEW: Show structured processing to citizen
+    processed_data: Optional[dict] = None
+    clarification_requested: Optional[dict] = None
+    clarification_history: list[dict] = []
+    citizen_updates: list[dict] = []
 
 
 class CreateRTIRequest(BaseModel):
@@ -257,6 +301,17 @@ class AdminUpdateRTIRequest(BaseModel):
     status: Optional[str] = None
     rejection_reason: Optional[str] = None
 
+    # NEW: Officer can request clarification
+    request_clarification: Optional[ClarificationRequest] = None
+
+
+class CitizenUpdateRequest(BaseModel):
+    """Payload for citizen to update their request with clarifications."""
+
+    updated_description: Optional[str] = None
+    additional_information: Optional[str] = None
+    answers_to_questions: dict[str, str] = {}  # Question -> Answer
+
 
 class FAQ(BaseModel):
     id: str
@@ -269,6 +324,7 @@ class StatsResponse(BaseModel):
     pending: int
     in_progress: int
     under_review: int
+    clarification_needed: int  # NEW
     responded: int
     rejected: int
     total_departments: int
@@ -426,16 +482,45 @@ def create_request(
 
     The citizen's name and email are taken from the authenticated user — the
     payload only carries the actual RTI content (department, subject, description).
+
+    The system processes the request into a structured format for officer review.
     """
     department_name = _get_department_name(payload.department_id)
 
     today = date.today().isoformat()
 
-    answer, request_status = _generate_answer(
-        department_id=payload.department_id,
-        subject=payload.subject,
-        description=payload.description,
-    )
+    # Step 1: Process request into structured format for officer
+    log.info(f"Processing new request: '{payload.subject[:50]}...'")
+    try:
+        processed_data = process_request_structure(
+            subject=payload.subject,
+            description=payload.description,
+            department_id=payload.department_id,
+        )
+        log.info(
+            f"Request structured: completeness={processed_data.get('completeness_score', 0):.2f}, "
+            f"complexity={processed_data.get('estimated_complexity', 'Unknown')}"
+        )
+    except Exception as e:
+        log.error(f"Failed to structure request: {e}", exc_info=True)
+        processed_data = None
+
+    # Step 2: Generate draft response (if request is sufficiently complete)
+    answer = None
+    request_status = "Under Review"  # Default: wait for officer review
+
+    # Only generate AI response if completeness score is high enough
+    if processed_data and processed_data.get("completeness_score", 0) >= 0.7:
+        answer, request_status = _generate_answer(
+            department_id=payload.department_id,
+            subject=payload.subject,
+            description=payload.description,
+        )
+    else:
+        completeness = (
+            processed_data.get("completeness_score", 0) if processed_data else 0
+        )
+        log.info(f"Request needs officer review (completeness: {completeness:.2f})")
 
     new_request: dict = {
         "id": _next_request_id(),
@@ -455,6 +540,11 @@ def create_request(
         "reviewed_by": None,
         "reviewed_at": None,
         "rejection_reason": None,
+        # NEW: Structured processing data
+        "processed_data": processed_data,
+        "clarification_requested": None,
+        "clarification_history": [],
+        "citizen_updates": [],
     }
 
     _db["requests"].append(new_request)
@@ -586,6 +676,7 @@ def get_stats():
         "Pending": 0,
         "In Progress": 0,
         "Under Review": 0,
+        "Clarification Needed": 0,
         "Responded": 0,
         "Rejected": 0,
     }
@@ -599,6 +690,7 @@ def get_stats():
         pending=status_counts["Pending"],
         in_progress=status_counts["In Progress"],
         under_review=status_counts["Under Review"],
+        clarification_needed=status_counts["Clarification Needed"],
         responded=status_counts["Responded"],
         rejected=status_counts["Rejected"],
         total_departments=len(_db["departments"]),
@@ -607,7 +699,13 @@ def get_stats():
 
 # ── Admin ────────────────────────────────────────────────────────────────────
 
-_ADMIN_EDITABLE_STATUSES = {"Under Review", "Responded", "Rejected", "Pending"}
+_ADMIN_EDITABLE_STATUSES = {
+    "Under Review",
+    "Responded",
+    "Rejected",
+    "Pending",
+    "Clarification Needed",
+}
 
 
 @app.get(
@@ -652,9 +750,13 @@ def admin_update_request(
     admin: UserPublic = Depends(get_current_admin),
 ):
     """
-    Update a request's draft response, status, or both. Stamps reviewed_by /
-    reviewed_at on any change. Used by the admin panel to approve, edit, or
-    reject AI-drafted responses.
+    Update a request's draft response, status, or request clarification from citizen.
+    Stamps reviewed_by / reviewed_at on any change.
+
+    Officers can:
+    1. Approve/edit the AI-drafted response and mark as "Responded"
+    2. Request clarification from the citizen (status becomes "Clarification Needed")
+    3. Reject the request with a reason
     """
     target = None
     for req in _db["requests"]:
@@ -667,6 +769,39 @@ def admin_update_request(
             detail=f"RTI request '{request_id}' not found.",
         )
 
+    # Check if officer is requesting clarification
+    if payload.request_clarification is not None:
+        log.info(f"Officer requesting clarification for {request_id}")
+
+        clarification = payload.request_clarification.model_dump()
+
+        # Add to history
+        if target.get("clarification_history") is None:
+            target["clarification_history"] = []
+
+        target["clarification_history"].append(
+            {
+                "timestamp": date.today().isoformat(),
+                "requested_by": admin.email,
+                "clarification": clarification,
+            }
+        )
+
+        target["clarification_requested"] = clarification
+        target["status"] = "Clarification Needed"
+        target["date_updated"] = date.today().isoformat()
+        target["reviewed_by"] = admin.email
+        target["reviewed_at"] = date.today().isoformat()
+
+        # Persist and return
+        try:
+            _persist_data()
+        except Exception as e:
+            log.error(f"Failed to persist after requesting clarification: {e}")
+
+        return target
+
+    # Standard update flow
     if (
         payload.response is None
         and payload.status is None
@@ -674,7 +809,7 @@ def admin_update_request(
     ):
         raise HTTPException(
             status_code=400,
-            detail="At least one of response, status, or rejection_reason must be provided.",
+            detail="At least one of response, status, rejection_reason, or request_clarification must be provided.",
         )
 
     if payload.status is not None:
@@ -721,5 +856,100 @@ def admin_update_request(
     except Exception as e:
         log.error(f"Failed to persist after updating request: {e}")
         # Continue - update is in memory even if persistence fails
+
+    return target
+
+
+@app.patch(
+    "/api/requests/{request_id}/clarify",
+    response_model=PublicRTIRequest,
+    tags=["RTI Requests"],
+)
+def citizen_update_request(
+    request_id: str,
+    payload: CitizenUpdateRequest,
+    current_user: UserPublic = Depends(get_current_user),
+):
+    """
+    Citizen updates their request with clarifications requested by officer.
+
+    This endpoint allows citizens to:
+    1. Provide updated/expanded description
+    2. Add additional information
+    3. Answer specific questions from the officer
+
+    After update, the request status changes back to "Under Review" for officer re-evaluation.
+    """
+    # Find the request
+    target = None
+    for req in _db["requests"]:
+        if req["id"] == request_id:
+            target = req
+            break
+
+    if target is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"RTI request '{request_id}' not found.",
+        )
+
+    # Check authorization - only the citizen who filed can update
+    if target["email"] != current_user.email:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only update your own requests.",
+        )
+
+    # Check if clarification was requested
+    if target.get("status") != "Clarification Needed":
+        raise HTTPException(
+            status_code=400,
+            detail="No clarification has been requested for this request.",
+        )
+
+    # Record the citizen's update
+    update_record = {
+        "timestamp": date.today().isoformat(),
+        "updated_description": payload.updated_description,
+        "additional_information": payload.additional_information,
+        "answers_to_questions": payload.answers_to_questions,
+    }
+
+    if target.get("citizen_updates") is None:
+        target["citizen_updates"] = []
+
+    target["citizen_updates"].append(update_record)
+
+    # Update the description if provided
+    if payload.updated_description:
+        # Keep original in clarification history, update with new one
+        target["description"] = payload.updated_description
+        log.info(f"Updated description for request {request_id}")
+
+    # Clear the clarification request and change status back to Under Review
+    target["clarification_requested"] = None
+    target["status"] = "Under Review"
+    target["date_updated"] = date.today().isoformat()
+
+    # Re-process the request with updated information
+    log.info(f"Re-processing request {request_id} after citizen update")
+    try:
+        processed_data = process_request_structure(
+            subject=target["subject"],
+            description=target["description"],
+            department_id=target["department_id"],
+        )
+        target["processed_data"] = processed_data
+        log.info(
+            f"Re-processed request: completeness={processed_data.get('completeness_score', 0):.2f}"
+        )
+    except Exception as e:
+        log.error(f"Failed to re-process request: {e}", exc_info=True)
+
+    # Persist to disk
+    try:
+        _persist_data()
+    except Exception as e:
+        log.error(f"Failed to persist after citizen update: {e}")
 
     return target

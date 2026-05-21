@@ -35,7 +35,7 @@ function Brand() {
           RTI4All
         </span>
         <span className="mt-0.5 text-[10px] uppercase tracking-[0.12em] text-ink-500">
-          Climate · Environment · Energy
+          Automated Transparency
         </span>
       </div>
     </Link>
@@ -143,7 +143,7 @@ export function Footer() {
         <div>
           <span className="font-medium text-ink-700">RTI4All</span>
           <span className="mx-2 text-ink-300">·</span>
-          Ministry of Climate Change, Environment and Energy
+          <span className="uppercase tracking-[0.12em]">Automated Transparency</span>
         </div>
         <div>
           Mandated by the Right to Information Act (Act No. 1/2014)

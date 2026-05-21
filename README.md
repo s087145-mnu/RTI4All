@@ -412,7 +412,70 @@ better at the ministry's specific style.
 
 ---
 
+## Models we use (and why)
+
+Two different Anthropic Claude models, picked for two different jobs.
+Both are configurable via env vars
+(`ANTHROPIC_MODEL`, `ANTHROPIC_STRUCTURE_MODEL`).
+
+| Stage | Model | Used for | Why this model |
+| ----- | ----- | -------- | --------------- |
+| ① Structurer | **`claude-3-5-sonnet-20241022`** | Parsing the citizen's free text into a strict JSON object (`request_type`, `key_questions`, `completeness_score`, etc.) | Sonnet 3.5 is reliable at *structured* output — it returns clean JSON with the schema we specified, with very low malformed-output rate. The Structurer's job is essentially an information-extraction task; we want correctness over style, and Sonnet's JSON mode is well-suited. |
+| ③ Drafter | **`claude-haiku-4-5`** | Writing the citizen-facing reply, grounded in the retrieved archive blocks | Haiku 4.5 is fast, cheap, and excellent at *grounded summarisation* — the exact shape of this task. The Drafter is constrained heavily by the system prompt ("only cite what's in the retrieval block, plain prose, 4–8 sentences"), so a smaller faster model gives the same quality at a fraction of the latency and cost. |
+
+### Why two models and not one
+
+A common shortcut would be to use one model for both jobs. We split for
+three reasons:
+
+1. **Different output formats.** Structurer must emit strict JSON;
+   Drafter must emit prose. Mixing modes in one prompt makes both jobs
+   worse.
+2. **Different cost/latency profiles.** The Structurer runs on *every*
+   filing (including clarification updates). The Drafter only runs when
+   `completeness_score ≥ 0.7`. Splitting lets us put the cheaper, faster
+   model on the hot path.
+3. **Cleaner failure modes.** If the Structurer returns bad JSON, we
+   fall back to a deterministic skeleton and skip drafting — the
+   request still gets created. If the Drafter call fails, the request
+   is filed as Pending and the officer can write a reply by hand.
+
+### Why Anthropic Claude (and not GPT / Gemini / open-weights)?
+
+- **Long, structured context handling.** Our system prompt for the
+  Drafter includes both retrieval blocks verbatim — Claude is robust to
+  long, structured prompts and follows the "only cite what's in the
+  block" instruction reliably.
+- **Safety posture.** Government Right to Information replies must not
+  hallucinate facts. Claude's training emphasises refusing rather than
+  making things up; combined with our retrieval-only grounding rule, we
+  get conservative drafts.
+- **No vendor lock-in.** The whole AI layer is one small Go package
+  (`internal/ai/`) that talks to the Anthropic Messages REST API
+  directly. Swapping to OpenAI or a local model would mean changing one
+  file.
+
+### Why we *don't* use an embedding model
+
+Our retrieval (RAG + graphify) is implemented with TF-IDF and a
+token-cooccurrence graph — both deterministic, both in-process, both
+zero-dependency. We deliberately *don't* use sentence-transformers or
+OpenAI embeddings here. Reasons:
+
+- **Cold start.** No 300 MB model download, no PyTorch, no GPU. The
+  retriever boots in microseconds.
+- **Explainability.** When the Drafter cites `RTI-2024-0001`, we can
+  show the officer exactly which keywords or co-occurring concepts
+  caused it to surface — important for an audit-friendly government
+  system.
+- **Domain fit.** Government RTI text is keyword-heavy (place names,
+  programme names, statute numbers). TF-IDF is competitive with
+  embedding models in this regime and ~1000× faster.
+
+---
+
 ## Boot sequence
+
 
 
 When `docker compose up --build` runs:
